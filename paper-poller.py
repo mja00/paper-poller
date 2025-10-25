@@ -83,26 +83,34 @@ client = Client(transport=transport, fetch_schema_from_transport=True)
 latest_query = gql(
     """
 query getLatestBuild($project: String!) {
-    project(id: $project) {
-        id
-        versions(last: 1) {
-            id
-            builds(last: 1) {
-                id
-                download(name: "server:default") {
-                    name
-                    size
-                    url
-                    checksums {
-                        sha256
+    project(key: $project) {
+        key
+        versions(first: 1, orderBy: { direction: DESC }) {
+            edges {
+                node {
+                    key
+                    builds(orderBy: { direction: DESC }, first: 1) {
+                        edges {
+                            node {
+                                number
+                                channel
+                                download(key: "server:default") {
+                                    name
+                                    url
+                                    checksums {
+                                        sha256
+                                    }
+                                    size
+                                }
+                                commits {
+                                    sha
+                                    message
+                                }
+                                createdAt
+                            }
+                        }
                     }
                 }
-                commits {
-                    sha
-                    message
-                }
-                time
-                channel
             }
         }
     }
@@ -113,26 +121,34 @@ query getLatestBuild($project: String!) {
 all_versions_query = gql(
     """
 query getAllVersionsWithBuilds($project: String!) {
-    project(id: $project) {
-        id
-        versions {
-            id
-            builds(last: 1) {
-                id
-                download(name: "server:default") {
-                    name
-                    size
-                    url
-                    checksums {
-                        sha256
+    project(key: $project) {
+        key
+        versions(first: 100, orderBy: {direction: DESC}) {
+            edges {
+                node {
+                    key
+                    builds(orderBy: { direction: DESC }, first: 1) {
+                        edges {
+                            node {
+                                number
+                                channel
+                                download(key: "server:default") {
+                                    name
+                                    url
+                                    checksums {
+                                        sha256
+                                    }
+                                    size
+                                }
+                                commits {
+                                    sha
+                                    message
+                                }
+                                createdAt
+                            }
+                        }
                     }
                 }
-                commits {
-                    sha
-                    message
-                }
-                time
-                channel
             }
         }
     }
@@ -366,7 +382,7 @@ class PaperAPI:
 
     def _process_and_send_update(self, version_id, build_info, channel_changed):
         """Process a build and send webhook updates for it"""
-        build_id = build_info["id"]
+        build_id = build_info["number"]
         channel_name = build_info["channel"]
 
         if DRY_RUN:
@@ -380,7 +396,7 @@ class PaperAPI:
         # Process build information
         changes = self.get_changes_for_build(build_info)
         download_url = build_info["download"]["url"]
-        build_time = int(convert_build_date(build_info["time"]).timestamp())
+        build_time = int(convert_build_date(build_info["createdAt"]).timestamp())
 
         # Send webhook to all configured URLs
         for hook in webhook_urls:
@@ -402,7 +418,7 @@ class PaperAPI:
         self, version_id, build_info, use_legacy_storage=False
     ):
         """Check if a version needs an update and process it if so"""
-        build_id = build_info["id"]
+        build_id = build_info["number"]
         channel_name = build_info["channel"]
 
         if use_legacy_storage:
@@ -447,8 +463,8 @@ class PaperAPI:
         """Original behavior: check only the latest version"""
         try:
             gql_latest_build = self.get_latest_build()
-            latest_version = gql_latest_build["project"]["versions"][0]["id"]
-            latest_build_info = gql_latest_build["project"]["versions"][0]["builds"][0]
+            latest_version = gql_latest_build["project"]["versions"]["edges"][0]["node"]["key"]
+            latest_build_info = gql_latest_build["project"]["versions"]["edges"][0]["node"]["builds"]["edges"][0]["node"]
 
             # Check and process update using extracted function
             update_sent = self._check_version_for_update(
@@ -470,20 +486,21 @@ class PaperAPI:
         try:
             # Get all versions to check for updates
             gql_all_versions = self.get_all_versions()
-            all_versions = gql_all_versions["project"]["versions"]
+            all_versions = gql_all_versions["project"]["versions"]["edges"]
 
             updates_sent = 0
 
             # Check each version for updates
-            for version_data in all_versions:
-                version_id = version_data["id"]
-                builds = version_data.get("builds", [])
+            for version_edge in all_versions:
+                version_data = version_edge["node"]
+                version_id = version_data["key"]
+                builds = version_data.get("builds", {}).get("edges", [])
 
                 # Skip versions with no builds
                 if not builds:
                     continue
 
-                build_info = builds[0]
+                build_info = builds[0]["node"]
 
                 # Check and process update using extracted function
                 if self._check_version_for_update(
