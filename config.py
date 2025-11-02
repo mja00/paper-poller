@@ -112,10 +112,10 @@ class Config:
             try:
                 data = json.loads(sys.stdin.read())
                 return data["urls"]
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, KeyError) as e:
                 logger.error(f"Error parsing JSON from stdin: {e}")
-                logger.error("Exiting - invalid JSON input")
-                sys.exit(1)
+                logger.error("Falling back to default webhook URL")
+                return [self.DEFAULT_WEBHOOK_URL]
 
         # Default fallback
         logger.info("No webhook URL found, using default")
