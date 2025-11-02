@@ -223,13 +223,14 @@ class TestPaperAPIProcessAndSendUpdate:
     """Tests for _process_and_send_update method."""
 
     @patch("paper_poller.get_spigot_drama")
-    @patch("paper_poller.webhook_urls", ["http://test.webhook.com"])
     def test_process_and_send_update_normal_mode(
         self, mock_drama, sample_build_info, mocker
     ):
         """Test _process_and_send_update sends webhooks in normal mode."""
         mock_drama.return_value = {"response": "No drama today"}
         mock_send = mocker.patch.object(PaperAPI, "send_v2_webhook")
+        # Mock webhook_urls in config
+        mocker.patch("paper_poller.config.webhook_urls", ["http://test.webhook.com"])
 
         api = PaperAPI()
         api._process_and_send_update("1.21.1", sample_build_info, False)
@@ -239,26 +240,17 @@ class TestPaperAPIProcessAndSendUpdate:
 
     def test_process_and_send_update_dry_run_mode(self, sample_build_info, mocker):
         """Test _process_and_send_update doesn't send webhooks in dry run."""
-        # Patch DRY_RUN at the module level before it's evaluated
-        mocker.patch("paper_poller.DRY_RUN", True)
+        # Patch DRY_RUN at the config level
+        mocker.patch("paper_poller.config.DRY_RUN", True)
         mock_send = mocker.patch.object(PaperAPI, "send_v2_webhook")
 
         api = PaperAPI()
-
-        # Manually test the dry run logic
-        sample_build_info["id"]
-
-        # Simulate what _process_and_send_update does in dry run mode
-        import paper_poller as pp
-
-        if pp.DRY_RUN:
-            # In dry run mode, webhook should not be called
-            mock_send.assert_not_called()
-        else:
-            # If not in dry run, call the method and verify
-            api._process_and_send_update("1.21.1", sample_build_info, False)
-            # This test expects dry run, so we assert not called
-            mock_send.assert_not_called()
+        
+        # Call the method - it should detect dry run and return early
+        api._process_and_send_update("1.21.1", sample_build_info, False)
+        
+        # In dry run mode, webhook should not be called
+        mock_send.assert_not_called()
 
 
 class TestGetSpigotDrama:
@@ -288,7 +280,6 @@ class TestPaperAPIWebhookPayload:
     """Tests for webhook payload construction."""
 
     @patch("requests.post")
-    @patch("paper_poller.webhook_urls", ["http://test.webhook.com"])
     def test_send_v2_webhook_payload_structure(self, mock_post):
         """Test that webhook payload has correct structure."""
         api = PaperAPI()

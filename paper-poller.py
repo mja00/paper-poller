@@ -1,29 +1,29 @@
 import json
-import os
+import logging
 import re
-import sys
 import time
 import urllib.parse
 from datetime import datetime as dt
 from enum import Enum
+from pathlib import Path
 
 import requests
-from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 from gql import Client, gql
 from gql.transport.requests import RequestsHTTPTransport
 
-load_dotenv()
+from config import Config
 
-# Configuration: Check all versions or just the latest
-# Set PAPER_POLLER_CHECK_ALL_VERSIONS=true to enable multi-version checking
-CHECK_ALL_VERSIONS = (
-    os.getenv("PAPER_POLLER_CHECK_ALL_VERSIONS", "false").lower() == "true"
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
+logger = logging.getLogger(__name__)
 
-# Configuration: Dry run mode - process updates but don't send webhooks
-# Set PAPER_POLLER_DRY_RUN=true to enable dry run mode
-DRY_RUN = os.getenv("PAPER_POLLER_DRY_RUN", "false").lower() == "true"
+# Initialize configuration
+config = Config()
 
 
 class Color(Enum):
@@ -36,13 +36,18 @@ class Color(Enum):
     YELLOW = 0xFFC859
 
 
-COLORS = {color.name.lower(): color.value for color in Color}
-
 CHANNEL_COLORS = {
     "ALPHA": Color.RED.value,
     "BETA": Color.YELLOW.value,
     "STABLE": Color.BLUE.value,
     "RECOMMENDED": Color.GREEN.value,
+}
+
+PROJECT_IMAGE_URLS = {
+    Config.PROJECT_PAPER: "https://assets.papermc.io/brand/papermc_logo.512.png",
+    Config.PROJECT_FOLIA: "https://assets.papermc.io/brand/folia_logo.256x139.png",
+    Config.PROJECT_VELOCITY: "https://assets.papermc.io/brand/velocity_logo.256x128.png",
+    Config.PROJECT_WATERFALL: "",  # No image URL found, will use empty string
 }
 
 headers = {
@@ -51,43 +56,7 @@ headers = {
     "Pragma": "no-cache",
 }
 
-# Check the ENV for a webhook URL
-if os.getenv("WEBHOOK_URL"):
-    print(f"Using webhook URL from ENV: {os.getenv('WEBHOOK_URL')}")
-    try:
-        webhook_urls = json.loads(os.getenv("WEBHOOK_URL"))
-    except json.JSONDecodeError as e:
-        print(f"Error parsing WEBHOOK_URL from environment: {e}")
-        print("Falling back to default webhook URL")
-        webhook_urls = ["https://httpbin.org/post"]
-elif os.path.exists("webhooks.json"):
-    print("Using webhook URL from webhooks.json")
-    with open("webhooks.json", "r") as f:
-        webhook_urls = json.load(f)["urls"]
-else:
-    print("No webhook URL found, using default")
-    webhook_urls = ["https://httpbin.org/post"]
-
-# Get start args
-start_args = sys.argv[1:]
-# If it includes --stdin, we'll read from stdin
-
-# Check if there's anything coming in through STDIN
-if "--stdin" in start_args:
-    # If there is, read it as a json object
-    try:
-        data = json.loads(sys.stdin.read())
-        # Grab the urls element from the json object
-        webhook_urls = data["urls"]
-    except json.JSONDecodeError as e:
-        print(f"Error parsing JSON from stdin: {e}")
-        print("Exiting - invalid JSON input")
-        sys.exit(1)
-
-
-gql_base = "https://fill.papermc.io/graphql"
-
-transport = RequestsHTTPTransport(url=gql_base)
+transport = RequestsHTTPTransport(url=Config.GQL_BASE_URL)
 client = Client(transport=transport, fetch_schema_from_transport=True)
 
 latest_query = gql(
@@ -167,31 +136,63 @@ query getAllVersionsWithBuilds($project: String!) {
 )
 
 
-def convert_commit_hash_to_short(hash):
+def convert_commit_hash_to_short(hash: str) -> str:
+    """Convert a commit hash to its short 7-character form.
+    
+    Args:
+        hash: Full commit hash string
+        
+    Returns:
+        First 7 characters of the hash
+    """
     return hash[:7]
 
 
-def convert_build_date(date):
+def convert_build_date(date: str) -> dt:
+    """Convert ISO format date string to datetime object.
+    
+    Args:
+        date: ISO format date string (e.g., "2022-06-14T10:40:30.563Z")
+        
+    Returns:
+        datetime object with timezone information
+        
+    Raises:
+        ValueError: If date format is invalid
+    """
     # format: 2022-06-14T10:40:30.563Z
-    return dt.strptime(date, "%Y-%m-%dT%H:%M:%S.%f%z")
+    try:
+        return dt.strptime(date, "%Y-%m-%dT%H:%M:%S.%f%z")
+    except ValueError:
+        # Try without microseconds if parsing fails
+        try:
+            return dt.strptime(date, "%Y-%m-%dT%H:%M:%S%z")
+        except ValueError:
+            logger.error(f"Invalid date format: {date}")
+            raise
 
 
 def get_spigot_drama() -> str | dict:
+    """Fetch Spigot drama API response.
+    
+    Returns:
+        Dictionary with drama response, or fallback string on error
+    """
     try:
-        response = requests.get("https://drama.mart.fyi/api", headers=headers, timeout=10)
+        response = requests.get("https://drama.mart.fyi/api", headers=headers, timeout=Config.DEFAULT_REQUEST_TIMEOUT)
         response.raise_for_status()  # Raise exception for bad status codes
         data = response.json()
         return data
     except requests.RequestException as e:
-        print(f"Error getting spigot drama: {e}")
+        logger.error(f"Error getting spigot drama: {e}")
         return "There's no drama :("
     except Exception as e:
-        print(f"Error getting spigot drama: {e}")
+        logger.error(f"Error getting spigot drama: {e}")
         return "There's no drama :("
 
 
 class PaperAPI:
-    def __init__(self, base_url="https://api.papermc.io/v2", project="paper"):
+    def __init__(self, base_url: str = "https://api.papermc.io/v2", project: str = "paper") -> None:
         self.headers = {
             "User-Agent": "PaperMC Version Poller",
             "Cache-Control": "no-cache",
@@ -199,34 +200,96 @@ class PaperAPI:
         }
         self.base_url = base_url
         self.project = project
-        self.image_url = ""
-        if self.project == "paper":
-            self.image_url = "https://assets.papermc.io/brand/papermc_logo.512.png"
-        elif self.project == "folia":
-            self.image_url = "https://assets.papermc.io/brand/folia_logo.256x139.png"
-        elif self.project == "velocity":
-            self.image_url = "https://assets.papermc.io/brand/velocity_logo.256x128.png"
+        self.image_url = PROJECT_IMAGE_URLS.get(self.project, "")
 
-    def up_to_date(self, version, build) -> bool:
-        # Read out {project}_poller.json file
+    def _read_state_file(self) -> dict:
+        """Read state file with default structure if not found.
+        
+        Returns:
+            Dictionary containing state data
+        """
+        state_file = Path(f"{self.project}_poller.json")
         try:
-            with open(f"{self.project}_poller.json", "r") as f:
-                data = json.load(f)
+            with open(state_file, "r") as f:
+                return json.load(f)
         except FileNotFoundError:
-            data = {"version": "", "build": ""}
+            return {"versions": {}}
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing {state_file}: {e}")
+            return {"versions": {}}
+
+    def _validate_graphql_response(self, response: dict, expected_path: list[str]) -> bool:
+        """Validate that GraphQL response has the expected structure.
+        
+        Args:
+            response: GraphQL response dictionary
+            expected_path: List of keys representing the expected nested path
+            
+        Returns:
+            True if structure is valid, False otherwise
+        """
+        current = response
+        for key in expected_path:
+            if not isinstance(current, dict) or key not in current:
+                logger.error(f"GraphQL response missing expected key '{key}' at path {expected_path[:expected_path.index(key)+1]}")
+                return False
+            current = current[key]
+        return True
+
+    def _atomic_write_json(self, data: dict, filepath: Path) -> None:
+        """Write JSON data to file atomically using a temp file.
+        
+        Args:
+            data: Dictionary to write as JSON
+            filepath: Path to the target JSON file
+            
+        Raises:
+            OSError: If file operations fail
+        """
+        temp_file = filepath.with_suffix(filepath.suffix + ".tmp")
+        try:
+            with open(temp_file, "w") as f:
+                json.dump(data, f, indent=2)
+            temp_file.replace(filepath)
+        except Exception as e:
+            # Clean up temp file on error
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
+            raise
+
+    def up_to_date(self, version: str, build: str) -> bool:
+        """Check if the specified version and build are up to date.
+        
+        Args:
+            version: Minecraft version string
+            build: Build number string
+            
+        Returns:
+            True if version and build match stored values, False otherwise
+        """
+        data = self._read_state_file()
+        # Ensure legacy format keys exist
+        if "version" not in data:
+            data["version"] = ""
+        if "build" not in data:
+            data["build"] = ""
         # Check if the version is up to date
-        if data["version"] == version and data["build"] == build:
-            return True
-        else:
-            return False
+        return data["version"] == version and data["build"] == build
 
-    def up_to_date_for_version(self, version, build) -> bool:
-        # Read out {project}_poller.json file to check specific version
-        try:
-            with open(f"{self.project}_poller.json", "r") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            data = {"versions": {}}
+    def up_to_date_for_version(self, version: str, build: str) -> bool:
+        """Check if a specific version's build is up to date.
+        
+        Args:
+            version: Minecraft version string
+            build: Build number string
+            
+        Returns:
+            True if version and build match stored values, False otherwise
+        """
+        data = self._read_state_file()
 
         # Check if we have versions structure
         if "versions" not in data:
@@ -238,20 +301,32 @@ class PaperAPI:
         version_data = data["versions"].get(version, {})
         return version_data.get("build") == build
 
-    def get_stored_data(self):
-        try:
-            with open(f"{self.project}_poller.json", "r") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            data = {"version": "", "build": "", "channel": ""}
+    def get_stored_data(self) -> dict:
+        """Get stored data in legacy format.
+        
+        Returns:
+            Dictionary with version, build, and channel keys
+        """
+        data = self._read_state_file()
+        # Ensure legacy format keys exist
+        if "version" not in data:
+            data["version"] = ""
+        if "build" not in data:
+            data["build"] = ""
+        if "channel" not in data:
+            data["channel"] = ""
         return data
 
-    def get_stored_data_for_version(self, version):
-        try:
-            with open(f"{self.project}_poller.json", "r") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            data = {"versions": {}}
+    def get_stored_data_for_version(self, version: str) -> dict:
+        """Get stored data for a specific version.
+        
+        Args:
+            version: Minecraft version string
+            
+        Returns:
+            Dictionary with build and channel for the version
+        """
+        data = self._read_state_file()
 
         # Check if we have versions structure
         if "versions" not in data:
@@ -265,18 +340,29 @@ class PaperAPI:
 
         return data["versions"].get(version, {"build": "", "channel": None})
 
-    def write_to_json(self, version, build, channel_name):
+    def write_to_json(self, version: str, build: str, channel_name: str) -> None:
+        """Write legacy format data to JSON file.
+        
+        Args:
+            version: Minecraft version string
+            build: Build number string
+            channel_name: Channel name (e.g., STABLE, BETA)
+        """
         data = {"version": version, "build": build, "channel": channel_name}
-        with open(f"{self.project}_poller.json", "w") as f:
-            json.dump(data, f)
+        state_file = Path(f"{self.project}_poller.json")
+        self._atomic_write_json(data, state_file)
 
-    def write_version_to_json(self, version, build, channel_name):
+    def write_version_to_json(self, version: str, build: str, channel_name: str) -> None:
+        """Write version-specific data to JSON file.
+        
+        Args:
+            version: Minecraft version string
+            build: Build number string
+            channel_name: Channel name (e.g., STABLE, BETA)
+        """
         # Read existing data
-        try:
-            with open(f"{self.project}_poller.json", "r") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            data = {"versions": {}}
+        data = self._read_state_file()
+        state_file = Path(f"{self.project}_poller.json")
 
         # Ensure versions structure exists
         if "versions" not in data:
@@ -290,11 +376,18 @@ class PaperAPI:
         data["build"] = build
         data["channel"] = channel_name
 
-        with open(f"{self.project}_poller.json", "w") as f:
-            json.dump(data, f)
+        self._atomic_write_json(data, state_file)
 
-    def get_changes_for_build(self, data) -> str:
-        return_string = ""
+    def get_changes_for_build(self, data: dict) -> str:
+        """Format commit changes for display in webhook.
+        
+        Args:
+            data: Build info dictionary containing commits list
+            
+        Returns:
+            Formatted string with commit changes, one per line
+        """
+        change_lines = []
         for change in data["commits"]:
             commit_hash = convert_commit_hash_to_short(change["sha"])
             full_hash = change["sha"]
@@ -315,34 +408,90 @@ class PaperAPI:
             github_url = f"https://github.com/PaperMC/{self.project}/commit/{full_hash}"
             # URL encode only the github_url parameter value, not the entire URL
             encoded_github_url = urllib.parse.quote(github_url, safe="")
-            return_string += f"- [{commit_hash}](https://diffs.dev/?github_url={encoded_github_url}) {summary}\n"
-        return return_string
+            change_lines.append(f"- [{commit_hash}](https://diffs.dev/?github_url={encoded_github_url}) {summary}")
+        return "\n".join(change_lines) + "\n" if change_lines else ""
 
-    def get_latest_build(self):
+    def get_latest_build(self) -> dict:
+        """Get the latest build for the project.
+        
+        Returns:
+            GraphQL response dictionary with latest build information
+        """
         query = latest_query
         variables = {"project": self.project}
         result = client.execute(query, variable_values=variables)
         return result
 
-    def get_all_versions(self):
+    def get_all_versions(self) -> dict:
+        """Get all versions with their latest builds.
+        
+        Returns:
+            GraphQL response dictionary with all versions and builds
+        """
         query = all_versions_query
         variables = {"project": self.project}
         result = client.execute(query, variable_values=variables)
         return result
 
+    def _send_webhook_with_retry(self, hook_url: str, payload: dict, max_retries: int = 3) -> bool:
+        """Send webhook with exponential backoff retry logic.
+        
+        Args:
+            hook_url: Webhook URL to send to
+            payload: Webhook payload dictionary
+            max_retries: Maximum number of retry attempts (default: 3)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    hook_url, json=payload, params={"with_components": "true"}, timeout=Config.WEBHOOK_TIMEOUT
+                )
+                response.raise_for_status()
+                return True
+            except requests.RequestException as e:
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 2^attempt seconds
+                    delay = 2 ** attempt
+                    logger.warning(f"Webhook attempt {attempt + 1} failed for {hook_url}: {e}. Retrying in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"Failed to send webhook to {hook_url} after {max_retries} attempts: {e}")
+                    return False
+            except Exception as e:
+                logger.error(f"Unexpected error sending webhook to {hook_url}: {e}")
+                return False
+        return False
+
     def send_v2_webhook(
         self,
-        hook_url,
-        latest_build,
-        latest_version,
-        build_time,
-        image_url,
-        changes,
-        download_url,
-        drama,
-        channel_name,
-        channel_changed,
-    ):
+        hook_url: str,
+        latest_build: str,
+        latest_version: str,
+        build_time: int,
+        image_url: str,
+        changes: str,
+        download_url: str,
+        drama: str | dict,
+        channel_name: str,
+        channel_changed: bool,
+    ) -> None:
+        """Send Discord webhook notification with build update information.
+        
+        Args:
+            hook_url: Discord webhook URL
+            latest_build: Latest build number string
+            latest_version: Latest Minecraft version string
+            build_time: Unix timestamp of build creation
+            image_url: URL to project logo image
+            changes: Formatted string of commit changes
+            download_url: URL to download the build
+            drama: Spigot drama response (string or dict)
+            channel_name: Build channel name
+            channel_changed: Whether the channel has changed from previous build
+        """
         payload = {
             "components": [
                 {
@@ -394,43 +543,41 @@ class PaperAPI:
                 "content": f"# {self.project.capitalize()} is now {channel_name}!",
             }
             payload["components"].append(changed_container)
-        # Then do a post to the webhook with ?with_components=true
-        try:
-            response = requests.post(
-                hook_url, json=payload, params={"with_components": "true"}, timeout=30
-            )
-            response.raise_for_status()  # Raise exception for bad status codes
-        except requests.RequestException as e:
-            print(f"Error sending webhook to {hook_url}: {e}")
-        except Exception as e:
-            print(f"Unexpected error sending webhook to {hook_url}: {e}")
+        # Send webhook with retry logic
+        self._send_webhook_with_retry(hook_url, payload)
 
-    def _process_and_send_update(self, version_id, build_info, channel_changed):
+    def _process_and_send_update(self, version_id: str, build_info: dict, channel_changed: bool) -> None:
         """Process a build and send webhook updates for it"""
         build_id = build_info["number"]
         channel_name = build_info["channel"]
 
-        if DRY_RUN:
-            print(
+        if config.DRY_RUN:
+            logger.info(
                 f"[DRY RUN] New build for {self.project} {version_id}. Would send update (Build {build_id})."
             )
             return
 
-        print(f"New build for {self.project} {version_id}. Sending update.")
+        logger.info(f"New build for {self.project} {version_id}. Sending update.")
 
         # Process build information
         changes = self.get_changes_for_build(build_info)
         # Safely access download URL with error handling
         download_info = build_info.get("download")
         if not download_info or "url" not in download_info:
-            print(f"Warning: No download URL found for {self.project} {version_id} build {build_id}")
+            logger.warning(f"No download URL found for {self.project} {version_id} build {build_id}")
             return
         download_url = download_info["url"]
-        build_time = int(convert_build_date(build_info["createdAt"]).timestamp())
+        try:
+            build_time = int(convert_build_date(build_info["createdAt"]).timestamp())
+        except ValueError as e:
+            logger.error(f"Invalid build date format for {self.project} {version_id} build {build_id}: {e}")
+            return
+
+        # Get drama once for all webhooks
+        drama = get_spigot_drama()
 
         # Send webhook to all configured URLs
-        for hook in webhook_urls:
-            drama = get_spigot_drama()
+        for hook in config.webhook_urls:
             self.send_v2_webhook(
                 hook_url=hook,
                 latest_build=build_id,
@@ -445,9 +592,18 @@ class PaperAPI:
             )
 
     def _check_version_for_update(
-        self, version_id, build_info, use_legacy_storage=False
-    ):
-        """Check if a version needs an update and process it if so"""
+        self, version_id: str, build_info: dict, use_legacy_storage: bool = False
+    ) -> bool:
+        """Check if a version needs an update and process it if so.
+        
+        Args:
+            version_id: Minecraft version string
+            build_info: Build information dictionary from GraphQL
+            use_legacy_storage: Whether to use legacy single-version storage format
+            
+        Returns:
+            True if update was sent, False otherwise
+        """
         build_id = build_info["number"]
         channel_name = build_info["channel"]
 
@@ -480,19 +636,30 @@ class PaperAPI:
 
         return False
 
-    def run(self):
-        current_time = dt.now()
-        print(f"[{current_time}] ", end="")
+    def run(self) -> None:
+        """Run the poller for this project, checking for updates."""
+        logger.info(f"Checking {self.project}")
 
-        if CHECK_ALL_VERSIONS:
+        if config.CHECK_ALL_VERSIONS:
             self._run_multi_version_mode()
         else:
             self._run_single_version_mode()
 
-    def _run_single_version_mode(self):
+    def _run_single_version_mode(self) -> None:
         """Original behavior: check only the latest version"""
         try:
             gql_latest_build = self.get_latest_build()
+            # Validate response structure
+            if not self._validate_graphql_response(gql_latest_build, ["project", "versions", "edges"]):
+                return
+            if not gql_latest_build["project"]["versions"]["edges"]:
+                logger.warning(f"No versions found for {self.project}")
+                return
+            if not self._validate_graphql_response(gql_latest_build["project"]["versions"]["edges"][0], ["node", "builds", "edges"]):
+                return
+            if not gql_latest_build["project"]["versions"]["edges"][0]["node"]["builds"]["edges"]:
+                logger.warning(f"No builds found for {self.project}")
+                return
             latest_version = gql_latest_build["project"]["versions"]["edges"][0]["node"]["key"]
             latest_build_info = gql_latest_build["project"]["versions"]["edges"][0]["node"]["builds"]["edges"][0]["node"]
 
@@ -502,20 +669,23 @@ class PaperAPI:
             )
 
             if not update_sent:
-                print(f"Up to date for {self.project}")
+                logger.info(f"Up to date for {self.project}")
 
         except KeyError as e:
-            print(f"Error getting latest build: {e}")
+            logger.error(f"Error getting latest build: {e}")
             return
         finally:
-            # Wait 2 seconds to not hit discord API rate limits
-            time.sleep(2)
+            # Wait to not hit discord API rate limits
+            time.sleep(Config.RATE_LIMIT_DELAY)
 
-    def _run_multi_version_mode(self):
+    def _run_multi_version_mode(self) -> None:
         """New behavior: check all versions for updates"""
         try:
             # Get all versions to check for updates
             gql_all_versions = self.get_all_versions()
+            # Validate response structure
+            if not self._validate_graphql_response(gql_all_versions, ["project", "versions", "edges"]):
+                return
             all_versions = gql_all_versions["project"]["versions"]["edges"]
 
             updates_sent = 0
@@ -538,47 +708,42 @@ class PaperAPI:
                 ):
                     updates_sent += 1
                     # Add small delay between versions to avoid rate limits
-                    time.sleep(1)
+                    time.sleep(Config.VERSION_CHECK_DELAY)
 
             if updates_sent == 0:
-                print(f"Up to date for all {self.project} versions")
+                logger.info(f"Up to date for all {self.project} versions")
             else:
-                print(f"Sent {updates_sent} updates for {self.project}")
+                logger.info(f"Sent {updates_sent} updates for {self.project}")
 
         except KeyError as e:
-            print(f"Error getting versions: {e}")
+            logger.error(f"Error getting versions: {e}")
             return
         finally:
-            # Wait 2 seconds to not hit discord API rate limits
-            time.sleep(2)
+            # Wait to not hit discord API rate limits
+            time.sleep(Config.RATE_LIMIT_DELAY)
 
 
 def main():
-    lock_file = "paper_poller.lock"
-    lock = FileLock(lock_file, timeout=10)
+    lock_file = Path("paper_poller.lock")
+    lock = FileLock(str(lock_file), timeout=Config.LOCK_TIMEOUT)
 
     # Show configuration status
-    if DRY_RUN:
-        print("Running in DRY RUN mode - no webhooks will be sent")
-    if CHECK_ALL_VERSIONS:
-        print("Multi-version checking enabled - will check all Minecraft versions")
+    if config.DRY_RUN:
+        logger.info("Running in DRY RUN mode - no webhooks will be sent")
+    if config.CHECK_ALL_VERSIONS:
+        logger.info("Multi-version checking enabled - will check all Minecraft versions")
     else:
-        print("Single-version checking enabled - will check only the latest version")
+        logger.info("Single-version checking enabled - will check only the latest version")
 
     try:
         with lock:
-            paper = PaperAPI()
-            paper.run()
-            folia = PaperAPI(project="folia")
-            folia.run()
-            velocity = PaperAPI(project="velocity")
-            velocity.run()
-            waterfall = PaperAPI(project="waterfall")
-            waterfall.run()
+            for project_name in config.PROJECTS:
+                api = PaperAPI(project=project_name)
+                api.run()
     except Timeout:
-        print("Lock file is locked, exiting")
+        logger.warning("Lock file is locked, exiting")
     except Exception as e:
-        print(f"Error during execution: {e}")
+        logger.error(f"Error during execution: {e}")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,6 @@ os.environ.setdefault("WEBHOOK_URL", '["http://example.com"]')
 
 from paper_poller import (
     CHANNEL_COLORS,
-    COLORS,
     Color,
     convert_build_date,
     convert_commit_hash_to_short,
@@ -81,12 +80,12 @@ class TestColorEnums:
         assert Color.RED.value == 0xEA5B6F
         assert Color.YELLOW.value == 0xFFC859
 
-    def test_colors_dict_mapping(self):
-        """Test that COLORS dict maps lowercase names to values."""
-        assert COLORS["blue"] == 0x2B7FFF
-        assert COLORS["green"] == 0x4ECB8B
-        assert COLORS["red"] == 0xEA5B6F
-        assert len(COLORS) == 7
+    def test_color_enum_access(self):
+        """Test that Color enum can be accessed with lowercase names via value."""
+        # COLORS dict was removed, but we can still access via Color enum
+        assert Color.BLUE.value == 0x2B7FFF
+        assert Color.GREEN.value == 0x4ECB8B
+        assert Color.RED.value == 0xEA5B6F
 
     def test_channel_colors_mapping(self):
         """Test that channel names map to appropriate colors."""

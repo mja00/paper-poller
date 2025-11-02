@@ -24,13 +24,13 @@ __all__ = [
     "convert_build_date",
     "get_spigot_drama",
     "Color",
-    "COLORS",
     "CHANNEL_COLORS",
     "CHECK_ALL_VERSIONS",
     "DRY_RUN",
     "webhook_urls",
     "client",
     "main",
+    "config",
 ]
 
 # Make everything available at module level
@@ -39,10 +39,11 @@ convert_commit_hash_to_short = paper_poller_main.convert_commit_hash_to_short
 convert_build_date = paper_poller_main.convert_build_date
 get_spigot_drama = paper_poller_main.get_spigot_drama
 Color = paper_poller_main.Color
-COLORS = paper_poller_main.COLORS
 CHANNEL_COLORS = paper_poller_main.CHANNEL_COLORS
-CHECK_ALL_VERSIONS = paper_poller_main.CHECK_ALL_VERSIONS
-DRY_RUN = paper_poller_main.DRY_RUN
-webhook_urls = paper_poller_main.webhook_urls
+config = paper_poller_main.config
+# Backward compatibility exports
+CHECK_ALL_VERSIONS = paper_poller_main.config.CHECK_ALL_VERSIONS
+DRY_RUN = paper_poller_main.config.DRY_RUN
+webhook_urls = paper_poller_main.config.webhook_urls
 client = paper_poller_main.client
 main = paper_poller_main.main
