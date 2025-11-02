@@ -54,7 +54,12 @@ headers = {
 # Check the ENV for a webhook URL
 if os.getenv("WEBHOOK_URL"):
     print(f"Using webhook URL from ENV: {os.getenv('WEBHOOK_URL')}")
-    webhook_urls = json.loads(os.getenv("WEBHOOK_URL"))
+    try:
+        webhook_urls = json.loads(os.getenv("WEBHOOK_URL"))
+    except json.JSONDecodeError as e:
+        print(f"Error parsing WEBHOOK_URL from environment: {e}")
+        print("Falling back to default webhook URL")
+        webhook_urls = ["https://httpbin.org/post"]
 elif os.path.exists("webhooks.json"):
     print("Using webhook URL from webhooks.json")
     with open("webhooks.json", "r") as f:
@@ -70,9 +75,14 @@ start_args = sys.argv[1:]
 # Check if there's anything coming in through STDIN
 if "--stdin" in start_args:
     # If there is, read it as a json object
-    data = json.loads(sys.stdin.read())
-    # Grab the urls element from the json object
-    webhook_urls = data["urls"]
+    try:
+        data = json.loads(sys.stdin.read())
+        # Grab the urls element from the json object
+        webhook_urls = data["urls"]
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON from stdin: {e}")
+        print("Exiting - invalid JSON input")
+        sys.exit(1)
 
 
 gql_base = "https://fill.papermc.io/graphql"
@@ -168,9 +178,13 @@ def convert_build_date(date):
 
 def get_spigot_drama() -> str | dict:
     try:
-        response = requests.get("https://drama.mart.fyi/api", headers=headers)
+        response = requests.get("https://drama.mart.fyi/api", headers=headers, timeout=10)
+        response.raise_for_status()  # Raise exception for bad status codes
         data = response.json()
         return data
+    except requests.RequestException as e:
+        print(f"Error getting spigot drama: {e}")
+        return "There's no drama :("
     except Exception as e:
         print(f"Error getting spigot drama: {e}")
         return "There's no drama :("
@@ -299,9 +313,9 @@ class PaperAPI:
                     f"[#{pr_number}](https://github.com/PaperMC/{self.project}/issues/{pr_number})",
                 )
             github_url = f"https://github.com/PaperMC/{self.project}/commit/{full_hash}"
-            # URL encode the github_url
-            github_url = urllib.parse.quote(github_url)
-            return_string += f"- [{commit_hash}](https://diffs.dev/?github_url={github_url}) {summary}\n"
+            # URL encode only the github_url parameter value, not the entire URL
+            encoded_github_url = urllib.parse.quote(github_url, safe="")
+            return_string += f"- [{commit_hash}](https://diffs.dev/?github_url={encoded_github_url}) {summary}\n"
         return return_string
 
     def get_latest_build(self):
@@ -352,7 +366,10 @@ class PaperAPI:
                         {"type": 14, "divider": True},
                         {"type": 10, "content": changes},
                         {"type": 14, "divider": True},
-                        {"type": 10, "content": f"-# {drama['response']}"},
+                        {
+                            "type": 10,
+                            "content": f"-# {drama.get('response', 'There\'s no drama :(') if isinstance(drama, dict) else str(drama)}",
+                        },
                     ],
                 },
                 {
@@ -378,7 +395,15 @@ class PaperAPI:
             }
             payload["components"].append(changed_container)
         # Then do a post to the webhook with ?with_components=true
-        requests.post(hook_url, json=payload, params={"with_components": "true"})
+        try:
+            response = requests.post(
+                hook_url, json=payload, params={"with_components": "true"}, timeout=30
+            )
+            response.raise_for_status()  # Raise exception for bad status codes
+        except requests.RequestException as e:
+            print(f"Error sending webhook to {hook_url}: {e}")
+        except Exception as e:
+            print(f"Unexpected error sending webhook to {hook_url}: {e}")
 
     def _process_and_send_update(self, version_id, build_info, channel_changed):
         """Process a build and send webhook updates for it"""
@@ -395,7 +420,12 @@ class PaperAPI:
 
         # Process build information
         changes = self.get_changes_for_build(build_info)
-        download_url = build_info["download"]["url"]
+        # Safely access download URL with error handling
+        download_info = build_info.get("download")
+        if not download_info or "url" not in download_info:
+            print(f"Warning: No download URL found for {self.project} {version_id} build {build_id}")
+            return
+        download_url = download_info["url"]
         build_time = int(convert_build_date(build_info["createdAt"]).timestamp())
 
         # Send webhook to all configured URLs
@@ -549,12 +579,6 @@ def main():
         print("Lock file is locked, exiting")
     except Exception as e:
         print(f"Error during execution: {e}")
-    finally:
-        try:
-            if lock.is_locked:
-                lock.release()
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":
