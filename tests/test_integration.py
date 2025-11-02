@@ -97,7 +97,6 @@ class TestSingleVersionMode:
 
     @patch("paper_poller.client")
     @patch("requests.post")
-    @patch("paper_poller.webhook_urls", ["http://test.webhook.com"])
     @patch("paper_poller.get_spigot_drama")
     @patch("time.sleep")
     def test_run_single_version_mode_channel_change(
@@ -117,6 +116,10 @@ class TestSingleVersionMode:
         mock_client.execute.return_value = sample_latest_build_response
         mock_drama.return_value = {"response": "No drama"}
         mock_post.return_value.status_code = 200
+        # Mock webhook_urls in config
+        import paper_poller
+        mock_webhook_urls = ["http://test.webhook.com"]
+        paper_poller.config.webhook_urls = mock_webhook_urls
 
         # Create existing state with different channel
         api = PaperAPI()
@@ -275,31 +278,23 @@ class TestDryRunMode:
         # Mock the get_latest_build method
         api.get_latest_build = Mock(return_value=sample_latest_build_response)
 
-        # Mock _process_and_send_update to simulate dry run behavior
-        api._process_and_send_update
-        process_called = []
-
-        def mock_process(version_id, build_info, _channel_changed):
-            # Simulate DRY_RUN behavior: print message but don't send webhook
-            print(
-                f"[DRY RUN] New build for {api.project} {version_id}. Would send update (Build {build_info['id']})."
-            )
-            process_called.append((version_id, build_info["id"]))
-
-        api._process_and_send_update = mock_process
-
-        # Run with our mocked process method
-        api._run_single_version_mode()
-
-        # Verify NO webhooks were sent
-        mock_post.assert_not_called()
-
-        # Verify process was called (simulating update detection)
-        assert len(process_called) == 1
-
-        # Should have printed DRY RUN message
-        captured = capsys.readouterr()
-        assert "[DRY RUN]" in captured.out
+        # Patch DRY_RUN mode
+        import paper_poller
+        original_dry_run = paper_poller.config.DRY_RUN
+        paper_poller.config.DRY_RUN = True
+        
+        try:
+            # Mock the get_latest_build to return our test data
+            api.get_latest_build = Mock(return_value=sample_latest_build_response)
+            
+            # Run the check - should detect update but not send webhook in dry run
+            api._run_single_version_mode()
+            
+            # Verify NO webhooks were sent
+            mock_post.assert_not_called()
+        finally:
+            # Restore original value
+            paper_poller.config.DRY_RUN = original_dry_run
 
 
 class TestErrorHandling:
@@ -371,16 +366,18 @@ class TestCheckVersionForUpdate:
     """Tests for _check_version_for_update method."""
 
     @patch("requests.post")
-    @patch("paper_poller.webhook_urls", ["http://test.webhook.com"])
     @patch("paper_poller.get_spigot_drama")
     def test_check_version_legacy_storage(
-        self, mock_drama, mock_post, tmp_path, monkeypatch, sample_build_info
+        self, mock_drama, mock_post, tmp_path, monkeypatch, sample_build_info, mocker
     ):
         """Test _check_version_for_update with legacy storage."""
         monkeypatch.chdir(tmp_path)
 
         mock_drama.return_value = {"response": "No drama"}
         mock_post.return_value.status_code = 200
+        # Mock webhook_urls in config
+        import paper_poller
+        paper_poller.config.webhook_urls = ["http://test.webhook.com"]
 
         api = PaperAPI()
 
@@ -393,16 +390,18 @@ class TestCheckVersionForUpdate:
         assert mock_post.call_count == 1
 
     @patch("requests.post")
-    @patch("paper_poller.webhook_urls", ["http://test.webhook.com"])
     @patch("paper_poller.get_spigot_drama")
     def test_check_version_version_specific_storage(
-        self, mock_drama, mock_post, tmp_path, monkeypatch, sample_build_info
+        self, mock_drama, mock_post, tmp_path, monkeypatch, sample_build_info, mocker
     ):
         """Test _check_version_for_update with version-specific storage."""
         monkeypatch.chdir(tmp_path)
 
         mock_drama.return_value = {"response": "No drama"}
         mock_post.return_value.status_code = 200
+        # Mock webhook_urls in config
+        import paper_poller
+        paper_poller.config.webhook_urls = ["http://test.webhook.com"]
 
         api = PaperAPI()
 

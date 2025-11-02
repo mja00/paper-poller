@@ -12,7 +12,7 @@ import pytest
 def sample_build_info():
     """Sample build information for testing."""
     return {
-        "id": "123",
+        "number": "123",
         "channel": "STABLE",
         "download": {
             "name": "paper-1.21.1-123.jar",
@@ -30,7 +30,7 @@ def sample_build_info():
                 "message": "Improve performance for chunk loading",
             },
         ],
-        "time": "2025-10-12T12:00:00.000Z",
+        "createdAt": "2025-10-12T12:00:00.000Z",
     }
 
 
@@ -39,31 +39,39 @@ def sample_latest_build_response():
     """Sample GraphQL response for latest build query."""
     return {
         "project": {
-            "id": "paper",
-            "versions": [
-                {
-                    "id": "1.21.1",
-                    "builds": [
-                        {
-                            "id": "123",
-                            "channel": "STABLE",
-                            "download": {
-                                "name": "paper-1.21.1-123.jar",
-                                "size": 50000000,
-                                "url": "https://api.papermc.io/v2/projects/paper/versions/1.21.1/builds/123/downloads/paper-1.21.1-123.jar",
-                                "checksums": {"sha256": "abcdef1234567890"},
+            "key": "paper",
+            "versions": {
+                "edges": [
+                    {
+                        "node": {
+                            "key": "1.21.1",
+                            "builds": {
+                                "edges": [
+                                    {
+                                        "node": {
+                                            "number": "123",
+                                            "channel": "STABLE",
+                                            "download": {
+                                                "name": "paper-1.21.1-123.jar",
+                                                "size": 50000000,
+                                                "url": "https://api.papermc.io/v2/projects/paper/versions/1.21.1/builds/123/downloads/paper-1.21.1-123.jar",
+                                                "checksums": {"sha256": "abcdef1234567890"},
+                                            },
+                                            "commits": [
+                                                {
+                                                    "sha": "abc123def456789",
+                                                    "message": "Fix #1234 - Update DataConverter",
+                                                }
+                                            ],
+                                            "createdAt": "2025-10-12T12:00:00.000Z",
+                                        }
+                                    }
+                                ]
                             },
-                            "commits": [
-                                {
-                                    "sha": "abc123def456789",
-                                    "message": "Fix #1234 - Update DataConverter",
-                                }
-                            ],
-                            "time": "2025-10-12T12:00:00.000Z",
                         }
-                    ],
-                }
-            ],
+                    }
+                ]
+            },
         }
     }
 
@@ -73,54 +81,75 @@ def sample_all_versions_response():
     """Sample GraphQL response for all versions query."""
     return {
         "project": {
-            "id": "paper",
-            "versions": [
-                {
-                    "id": "1.21.1",
-                    "builds": [
-                        {
-                            "id": "123",
-                            "channel": "STABLE",
-                            "download": {
-                                "name": "paper-1.21.1-123.jar",
-                                "size": 50000000,
-                                "url": "https://api.papermc.io/v2/projects/paper/versions/1.21.1/builds/123/downloads/paper-1.21.1-123.jar",
-                                "checksums": {"sha256": "abcdef1234567890"},
+            "key": "paper",
+            "versions": {
+                "edges": [
+                    {
+                        "node": {
+                            "key": "1.21.1",
+                            "builds": {
+                                "edges": [
+                                    {
+                                        "node": {
+                                            "number": "123",
+                                            "channel": "STABLE",
+                                            "download": {
+                                                "name": "paper-1.21.1-123.jar",
+                                                "size": 50000000,
+                                                "url": "https://api.papermc.io/v2/projects/paper/versions/1.21.1/builds/123/downloads/paper-1.21.1-123.jar",
+                                                "checksums": {"sha256": "abcdef1234567890"},
+                                            },
+                                            "commits": [
+                                                {
+                                                    "sha": "abc123def456789",
+                                                    "message": "Fix #1234 - Update DataConverter",
+                                                }
+                                            ],
+                                            "createdAt": "2025-10-12T12:00:00.000Z",
+                                        }
+                                    }
+                                ]
                             },
-                            "commits": [
-                                {
-                                    "sha": "abc123def456789",
-                                    "message": "Fix #1234 - Update DataConverter",
-                                }
-                            ],
-                            "time": "2025-10-12T12:00:00.000Z",
                         }
-                    ],
-                },
-                {
-                    "id": "1.21",
-                    "builds": [
-                        {
-                            "id": "120",
-                            "channel": "RECOMMENDED",
-                            "download": {
-                                "name": "paper-1.21-120.jar",
-                                "size": 49000000,
-                                "url": "https://api.papermc.io/v2/projects/paper/versions/1.21/builds/120/downloads/paper-1.21-120.jar",
-                                "checksums": {"sha256": "123456abcdef"},
+                    },
+                    {
+                        "node": {
+                            "key": "1.21",
+                            "builds": {
+                                "edges": [
+                                    {
+                                        "node": {
+                                            "number": "120",
+                                            "channel": "RECOMMENDED",
+                                            "download": {
+                                                "name": "paper-1.21-120.jar",
+                                                "size": 49000000,
+                                                "url": "https://api.papermc.io/v2/projects/paper/versions/1.21/builds/120/downloads/paper-1.21-120.jar",
+                                                "checksums": {"sha256": "123456abcdef"},
+                                            },
+                                            "commits": [
+                                                {
+                                                    "sha": "xyz789abc456",
+                                                    "message": "Performance improvements",
+                                                }
+                                            ],
+                                            "createdAt": "2025-10-11T12:00:00.000Z",
+                                        }
+                                    }
+                                ]
                             },
-                            "commits": [
-                                {
-                                    "sha": "xyz789abc456",
-                                    "message": "Performance improvements",
-                                }
-                            ],
-                            "time": "2025-10-11T12:00:00.000Z",
                         }
-                    ],
-                },
-                {"id": "1.20.6", "builds": []},
-            ],
+                    },
+                    {
+                        "node": {
+                            "key": "1.20.6",
+                            "builds": {
+                                "edges": []
+                            },
+                        }
+                    },
+                ]
+            },
         }
     }
 
@@ -129,7 +158,9 @@ def sample_all_versions_response():
 def mock_gql_client(mocker):
     """Mock GQL client for testing."""
     mock_client = MagicMock()
+    # Patch both the wrapper and the main module
     mocker.patch("paper_poller.client", mock_client)
+    mocker.patch("paper-poller.client", mock_client, create=True)
     return mock_client
 
 
