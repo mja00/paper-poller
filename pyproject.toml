@@ -1,0 +1,42 @@
+[project]
+name = "paper-poller"
+version = "0.1.0"
+description = "A bot for monitoring PaperMC project builds."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+dependencies = [
+    "filelock>=3.20.0",
+    "gql[requests]>=4.0.0",
+    "python-dotenv>=1.1.1",
+    "requests>=2.32.5",
+]
+
+[dependency-groups]
+dev = [
+    "freezegun>=1.5.1",
+    "pytest>=8.3.4",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "responses>=0.25.3",
+    "ruff>=0.14.0",
+]
+
+[tool.uv]
+# The entrypoint lives in paper-poller.py, whose hyphenated name is not an
+# importable module, so there is nothing to build or install as a package.
+package = false
+
+[tool.ruff]
+# Mirror the formatting latitude the project relied on under flake8 + black.
+line-length = 127
+
+[tool.ruff.lint]
+# Carried over from the old .flake8 ignore list.
+ignore = [
+    "E501", # line length is enforced loosely, not as an error
+    "F401", # re-exports in paper_poller.py shim are intentional
+    "E402", # module-level config init runs before some imports
+    "W191", # tabs
+    "W293", # whitespace on blank lines
+]
