@@ -118,6 +118,7 @@ class TestSingleVersionMode:
         mock_post.return_value.status_code = 200
         # Mock webhook_urls in config
         import paper_poller
+
         mock_webhook_urls = ["http://test.webhook.com"]
         paper_poller.config.webhook_urls = mock_webhook_urls
 
@@ -280,16 +281,17 @@ class TestDryRunMode:
 
         # Patch DRY_RUN mode
         import paper_poller
+
         original_dry_run = paper_poller.config.DRY_RUN
         paper_poller.config.DRY_RUN = True
-        
+
         try:
             # Mock the get_latest_build to return our test data
             api.get_latest_build = Mock(return_value=sample_latest_build_response)
-            
+
             # Run the check - should detect update but not send webhook in dry run
             api._run_single_version_mode()
-            
+
             # Verify NO webhooks were sent
             mock_post.assert_not_called()
         finally:
@@ -302,9 +304,7 @@ class TestErrorHandling:
 
     @patch("paper_poller.client")
     @patch("time.sleep")
-    def test_run_handles_graphql_errors(
-        self, mock_sleep, mock_client, tmp_path, monkeypatch, capsys
-    ):
+    def test_run_handles_graphql_errors(self, mock_sleep, mock_client, tmp_path, monkeypatch, capsys):
         """Test that run handles GraphQL errors gracefully."""
         monkeypatch.chdir(tmp_path)
 
@@ -340,9 +340,7 @@ class TestErrorHandling:
     @patch("paper_poller.client")
     @patch("requests.post")
     @patch("time.sleep")
-    def test_run_handles_missing_data(
-        self, mock_sleep, mock_post, mock_client, tmp_path, monkeypatch
-    ):
+    def test_run_handles_missing_data(self, mock_sleep, mock_post, mock_client, tmp_path, monkeypatch):
         """Test that run handles missing data in response."""
         monkeypatch.chdir(tmp_path)
 
@@ -367,9 +365,7 @@ class TestCheckVersionForUpdate:
 
     @patch("requests.post")
     @patch("paper_poller.get_spigot_drama")
-    def test_check_version_legacy_storage(
-        self, mock_drama, mock_post, tmp_path, monkeypatch, sample_build_info, mocker
-    ):
+    def test_check_version_legacy_storage(self, mock_drama, mock_post, tmp_path, monkeypatch, sample_build_info, mocker):
         """Test _check_version_for_update with legacy storage."""
         monkeypatch.chdir(tmp_path)
 
@@ -377,14 +373,13 @@ class TestCheckVersionForUpdate:
         mock_post.return_value.status_code = 200
         # Mock webhook_urls in config
         import paper_poller
+
         paper_poller.config.webhook_urls = ["http://test.webhook.com"]
 
         api = PaperAPI()
 
         # Test with new build
-        result = api._check_version_for_update(
-            "1.21.1", sample_build_info, use_legacy_storage=True
-        )
+        result = api._check_version_for_update("1.21.1", sample_build_info, use_legacy_storage=True)
 
         assert result is True
         assert mock_post.call_count == 1
@@ -401,14 +396,13 @@ class TestCheckVersionForUpdate:
         mock_post.return_value.status_code = 200
         # Mock webhook_urls in config
         import paper_poller
+
         paper_poller.config.webhook_urls = ["http://test.webhook.com"]
 
         api = PaperAPI()
 
         # Test with new build
-        result = api._check_version_for_update(
-            "1.21.1", sample_build_info, use_legacy_storage=False
-        )
+        result = api._check_version_for_update("1.21.1", sample_build_info, use_legacy_storage=False)
 
         assert result is True
         assert mock_post.call_count == 1

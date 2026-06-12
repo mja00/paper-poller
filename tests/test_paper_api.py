@@ -37,9 +37,7 @@ class TestPaperAPIInitialization:
         """Test PaperAPI initializes correctly for Velocity project."""
         api = PaperAPI(project="velocity")
         assert api.project == "velocity"
-        assert (
-            api.image_url == "https://assets.papermc.io/brand/velocity_logo.256x128.png"
-        )
+        assert api.image_url == "https://assets.papermc.io/brand/velocity_logo.256x128.png"
 
     def test_custom_base_url(self):
         """Test PaperAPI can use custom base URL."""
@@ -206,11 +204,7 @@ class TestPaperAPIGetChanges:
     def test_get_changes_with_multiple_pr_references(self):
         """Test that multiple PR references are linked."""
         api = PaperAPI()
-        build_data = {
-            "commits": [
-                {"sha": "abc123def456789", "message": "Fix #1234 and close #5678"}
-            ]
-        }
+        build_data = {"commits": [{"sha": "abc123def456789", "message": "Fix #1234 and close #5678"}]}
 
         changes = api.get_changes_for_build(build_data)
         assert "[#1234]" in changes
@@ -223,9 +217,7 @@ class TestPaperAPIProcessAndSendUpdate:
     """Tests for _process_and_send_update method."""
 
     @patch("paper_poller.get_spigot_drama")
-    def test_process_and_send_update_normal_mode(
-        self, mock_drama, sample_build_info, mocker
-    ):
+    def test_process_and_send_update_normal_mode(self, mock_drama, sample_build_info, mocker):
         """Test _process_and_send_update sends webhooks in normal mode."""
         mock_drama.return_value = {"response": "No drama today"}
         mock_send = mocker.patch.object(PaperAPI, "send_v2_webhook")
@@ -245,10 +237,10 @@ class TestPaperAPIProcessAndSendUpdate:
         mock_send = mocker.patch.object(PaperAPI, "send_v2_webhook")
 
         api = PaperAPI()
-        
+
         # Call the method - it should detect dry run and return early
         api._process_and_send_update("1.21.1", sample_build_info, False)
-        
+
         # In dry run mode, webhook should not be called
         mock_send.assert_not_called()
 

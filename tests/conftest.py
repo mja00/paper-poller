@@ -143,9 +143,7 @@ def sample_all_versions_response():
                     {
                         "node": {
                             "key": "1.20.6",
-                            "builds": {
-                                "edges": []
-                            },
+                            "builds": {"edges": []},
                         }
                     },
                 ]
