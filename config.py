@@ -37,9 +37,7 @@ class Config:
     PROJECTS = [PROJECT_PAPER, PROJECT_FOLIA, PROJECT_VELOCITY, PROJECT_WATERFALL]
 
     # Feature flags (from environment)
-    CHECK_ALL_VERSIONS = (
-        os.getenv("PAPER_POLLER_CHECK_ALL_VERSIONS", "false").lower() == "true"
-    )
+    CHECK_ALL_VERSIONS = os.getenv("PAPER_POLLER_CHECK_ALL_VERSIONS", "false").lower() == "true"
     DRY_RUN = os.getenv("PAPER_POLLER_DRY_RUN", "false").lower() == "true"
 
     def __init__(self):
@@ -120,4 +118,3 @@ class Config:
         # Default fallback
         logger.info("No webhook URL found, using default")
         return [self.DEFAULT_WEBHOOK_URL]
-

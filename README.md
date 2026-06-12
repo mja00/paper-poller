@@ -21,9 +21,9 @@ git clone https://github.com/yourusername/paper-poller.git
 cd paper-poller
 ```
 
-2. Install dependencies:
+2. Install dependencies with [uv](https://docs.astral.sh/uv/):
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 ## Configuration
@@ -47,7 +47,7 @@ Create a `webhooks.json` file in the project directory:
 ### Method 3: Stdin Input
 Pass webhook URLs through stdin with the `--stdin` flag:
 ```bash
-echo '{"urls": ["https://discord.com/api/webhooks/your-webhook-url"]}' | python paper-poller.py --stdin
+echo '{"urls": ["https://discord.com/api/webhooks/your-webhook-url"]}' | uv run paper-poller.py --stdin
 ```
 
 ## Usage
@@ -55,19 +55,19 @@ echo '{"urls": ["https://discord.com/api/webhooks/your-webhook-url"]}' | python 
 ### Basic Usage
 Run the script to check for updates on all supported projects:
 ```bash
-python paper-poller.py
+uv run paper-poller.py
 ```
 
 ### With Stdin Input
 ```bash
-echo '{"urls": ["your-webhook-url"]}' | python paper-poller.py --stdin
+echo '{"urls": ["your-webhook-url"]}' | uv run paper-poller.py --stdin
 ```
 
 ### Cron Job Setup
 To run the script periodically, add it to your crontab:
 ```bash
 # Check for updates every 10 minutes
-*/10 * * * * cd /path/to/paper-poller && python paper-poller.py
+*/10 * * * * cd /path/to/paper-poller && uv run paper-poller.py
 ```
 
 ## What It Monitors
@@ -94,7 +94,8 @@ The script sends rich Discord embeds containing:
 ```
 paper-poller/
 ├── paper-poller.py          # Main script
-├── requirements.txt          # Python dependencies
+├── pyproject.toml            # Project metadata and dependencies
+├── uv.lock                   # Pinned dependency lockfile
 ├── webhooks.example.json    # Example webhook configuration
 ├── {project}_poller.json    # State files for each project (auto-generated)
 └── paper_poller.lock        # Lock file to prevent concurrent runs
@@ -107,27 +108,27 @@ paper-poller/
 The project includes a comprehensive test suite using pytest:
 
 ```bash
-# Install test dependencies
-pip install -r requirements.txt
+# Install dependencies (including the test stack) into the project venv
+uv sync
 
 # Run all tests
-pytest
+uv run pytest
 
 # Run tests with coverage report
-pytest --cov=. --cov-report=html
+uv run pytest --cov=. --cov-report=html
 
 # Run specific test categories
-pytest -m unit          # Run only unit tests
-pytest -m integration   # Run only integration tests
+uv run pytest -m unit          # Run only unit tests
+uv run pytest -m integration   # Run only integration tests
 
 # Run tests in verbose mode
-pytest -v
+uv run pytest -v
 
 # Run a specific test file
-pytest tests/test_paper_api.py
+uv run pytest tests/test_paper_api.py
 
 # Run a specific test
-pytest tests/test_paper_api.py::TestPaperAPIInitialization::test_default_initialization
+uv run pytest tests/test_paper_api.py::TestPaperAPIInitialization::test_default_initialization
 ```
 
 ### Test Structure

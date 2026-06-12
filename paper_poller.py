@@ -11,9 +11,7 @@ import os
 # Import everything from the main script
 import sys
 
-spec = importlib.util.spec_from_file_location(
-    "paper_poller_main", os.path.join(os.path.dirname(__file__), "paper-poller.py")
-)
+spec = importlib.util.spec_from_file_location("paper_poller_main", os.path.join(os.path.dirname(__file__), "paper-poller.py"))
 paper_poller_main = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(paper_poller_main)
 

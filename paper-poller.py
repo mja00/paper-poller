@@ -138,10 +138,10 @@ query getAllVersionsWithBuilds($project: String!) {
 
 def convert_commit_hash_to_short(hash: str) -> str:
     """Convert a commit hash to its short 7-character form.
-    
+
     Args:
         hash: Full commit hash string
-        
+
     Returns:
         First 7 characters of the hash
     """
@@ -150,13 +150,13 @@ def convert_commit_hash_to_short(hash: str) -> str:
 
 def convert_build_date(date: str) -> dt:
     """Convert ISO format date string to datetime object.
-    
+
     Args:
         date: ISO format date string (e.g., "2022-06-14T10:40:30.563Z")
-        
+
     Returns:
         datetime object with timezone information
-        
+
     Raises:
         ValueError: If date format is invalid
     """
@@ -174,7 +174,7 @@ def convert_build_date(date: str) -> dt:
 
 def get_spigot_drama() -> str | dict:
     """Fetch Spigot drama API response.
-    
+
     Returns:
         Dictionary with drama response, or fallback string on error
     """
@@ -204,45 +204,55 @@ class PaperAPI:
 
     def _read_state_file(self) -> dict:
         """Read state file with default structure if not found.
-        
+
         Returns:
             Dictionary containing state data
         """
         state_file = Path(f"{self.project}_poller.json")
+        # Check if file exists and is empty (0 bytes)
+        if state_file.exists() and state_file.stat().st_size == 0:
+            logger.info(f"State file {state_file} is empty, will initialize with current state (no alerts will be sent)")
+            return {"versions": {}}
         try:
             with open(state_file, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+            return data
         except FileNotFoundError:
             return {"versions": {}}
         except json.JSONDecodeError as e:
             logger.error(f"Error parsing {state_file}: {e}")
             return {"versions": {}}
+        except Exception as e:
+            logger.error(f"Unexpected error reading {state_file}: {e}")
+            return {"versions": {}}
 
     def _validate_graphql_response(self, response: dict, expected_path: list[str]) -> bool:
         """Validate that GraphQL response has the expected structure.
-        
+
         Args:
             response: GraphQL response dictionary
             expected_path: List of keys representing the expected nested path
-            
+
         Returns:
             True if structure is valid, False otherwise
         """
         current = response
         for key in expected_path:
             if not isinstance(current, dict) or key not in current:
-                logger.error(f"GraphQL response missing expected key '{key}' at path {expected_path[:expected_path.index(key)+1]}")
+                logger.error(
+                    f"GraphQL response missing expected key '{key}' at path {expected_path[: expected_path.index(key) + 1]}"
+                )
                 return False
             current = current[key]
         return True
 
     def _atomic_write_json(self, data: dict, filepath: Path) -> None:
         """Write JSON data to file atomically using a temp file.
-        
+
         Args:
             data: Dictionary to write as JSON
             filepath: Path to the target JSON file
-            
+
         Raises:
             OSError: If file operations fail
         """
@@ -251,7 +261,7 @@ class PaperAPI:
             with open(temp_file, "w") as f:
                 json.dump(data, f, indent=2)
             temp_file.replace(filepath)
-        except Exception as e:
+        except Exception:
             # Clean up temp file on error
             if temp_file.exists():
                 try:
@@ -262,11 +272,11 @@ class PaperAPI:
 
     def up_to_date(self, version: str, build: str) -> bool:
         """Check if the specified version and build are up to date.
-        
+
         Args:
             version: Minecraft version string
             build: Build number string
-            
+
         Returns:
             True if version and build match stored values, False otherwise
         """
@@ -281,11 +291,11 @@ class PaperAPI:
 
     def up_to_date_for_version(self, version: str, build: str) -> bool:
         """Check if a specific version's build is up to date.
-        
+
         Args:
             version: Minecraft version string
             build: Build number string
-            
+
         Returns:
             True if version and build match stored values, False otherwise
         """
@@ -303,7 +313,7 @@ class PaperAPI:
 
     def get_stored_data(self) -> dict:
         """Get stored data in legacy format.
-        
+
         Returns:
             Dictionary with version, build, and channel keys
         """
@@ -319,10 +329,10 @@ class PaperAPI:
 
     def get_stored_data_for_version(self, version: str) -> dict:
         """Get stored data for a specific version.
-        
+
         Args:
             version: Minecraft version string
-            
+
         Returns:
             Dictionary with build and channel for the version
         """
@@ -342,7 +352,7 @@ class PaperAPI:
 
     def write_to_json(self, version: str, build: str, channel_name: str) -> None:
         """Write legacy format data to JSON file.
-        
+
         Args:
             version: Minecraft version string
             build: Build number string
@@ -354,7 +364,7 @@ class PaperAPI:
 
     def write_version_to_json(self, version: str, build: str, channel_name: str) -> None:
         """Write version-specific data to JSON file.
-        
+
         Args:
             version: Minecraft version string
             build: Build number string
@@ -380,10 +390,10 @@ class PaperAPI:
 
     def get_changes_for_build(self, data: dict) -> str:
         """Format commit changes for display in webhook.
-        
+
         Args:
             data: Build info dictionary containing commits list
-            
+
         Returns:
             Formatted string with commit changes, one per line
         """
@@ -413,7 +423,7 @@ class PaperAPI:
 
     def get_latest_build(self) -> dict:
         """Get the latest build for the project.
-        
+
         Returns:
             GraphQL response dictionary with latest build information
         """
@@ -424,7 +434,7 @@ class PaperAPI:
 
     def get_all_versions(self) -> dict:
         """Get all versions with their latest builds.
-        
+
         Returns:
             GraphQL response dictionary with all versions and builds
         """
@@ -435,12 +445,12 @@ class PaperAPI:
 
     def _send_webhook_with_retry(self, hook_url: str, payload: dict, max_retries: int = 3) -> bool:
         """Send webhook with exponential backoff retry logic.
-        
+
         Args:
             hook_url: Webhook URL to send to
             payload: Webhook payload dictionary
             max_retries: Maximum number of retry attempts (default: 3)
-            
+
         Returns:
             True if successful, False otherwise
         """
@@ -454,7 +464,7 @@ class PaperAPI:
             except requests.RequestException as e:
                 if attempt < max_retries - 1:
                     # Exponential backoff: 2^attempt seconds
-                    delay = 2 ** attempt
+                    delay = 2**attempt
                     logger.warning(f"Webhook attempt {attempt + 1} failed for {hook_url}: {e}. Retrying in {delay}s...")
                     time.sleep(delay)
                 else:
@@ -479,7 +489,7 @@ class PaperAPI:
         channel_changed: bool,
     ) -> None:
         """Send Discord webhook notification with build update information.
-        
+
         Args:
             hook_url: Discord webhook URL
             latest_build: Latest build number string
@@ -517,7 +527,7 @@ class PaperAPI:
                         {"type": 14, "divider": True},
                         {
                             "type": 10,
-                            "content": f"-# {drama.get('response', 'There\'s no drama :(') if isinstance(drama, dict) else str(drama)}",
+                            "content": f"-# {drama.get('response', "There's no drama :(") if isinstance(drama, dict) else str(drama)}",
                         },
                     ],
                 },
@@ -552,9 +562,7 @@ class PaperAPI:
         channel_name = build_info["channel"]
 
         if config.DRY_RUN:
-            logger.info(
-                f"[DRY RUN] New build for {self.project} {version_id}. Would send update (Build {build_id})."
-            )
+            logger.info(f"[DRY RUN] New build for {self.project} {version_id}. Would send update (Build {build_id}).")
             return
 
         logger.info(f"New build for {self.project} {version_id}. Sending update.")
@@ -591,16 +599,14 @@ class PaperAPI:
                 channel_changed=channel_changed,
             )
 
-    def _check_version_for_update(
-        self, version_id: str, build_info: dict, use_legacy_storage: bool = False
-    ) -> bool:
+    def _check_version_for_update(self, version_id: str, build_info: dict, use_legacy_storage: bool = False) -> bool:
         """Check if a version needs an update and process it if so.
-        
+
         Args:
             version_id: Minecraft version string
             build_info: Build information dictionary from GraphQL
             use_legacy_storage: Whether to use legacy single-version storage format
-            
+
         Returns:
             True if update was sent, False otherwise
         """
@@ -611,9 +617,16 @@ class PaperAPI:
             # Use original storage methods for single version mode
             updated = self.up_to_date(version_id, build_id)
             stored_data = self.get_stored_data()
+
+            # Check if this is initialization (empty file or no stored data)
+            is_initialization = not stored_data.get("version") and not stored_data.get("build")
+
+            # Suppress the channel-change message on first run so the
+            # initial alert doesn't look like a channel switch.
             channel_changed = (
                 stored_data.get("channel", None) is not None
                 and stored_data.get("channel", "") != channel_name
+                and not is_initialization
             )
 
             if not updated:
@@ -624,8 +637,14 @@ class PaperAPI:
             # Use version-specific storage methods for multi version mode
             updated = self.up_to_date_for_version(version_id, build_id)
             stored_version_data = self.get_stored_data_for_version(version_id)
+
+            # Check if this is initialization (no stored data for this version)
+            is_initialization = not stored_version_data.get("build")
+
+            # Force an init as no channel change so the message doesn't look weird (as it's the first in the line)
             channel_changed = (
-                stored_version_data.get("channel", None) is not None
+                not is_initialization
+                and stored_version_data.get("channel", None) is not None
                 and stored_version_data.get("channel", "") != channel_name
             )
 
@@ -655,7 +674,9 @@ class PaperAPI:
             if not gql_latest_build["project"]["versions"]["edges"]:
                 logger.warning(f"No versions found for {self.project}")
                 return
-            if not self._validate_graphql_response(gql_latest_build["project"]["versions"]["edges"][0], ["node", "builds", "edges"]):
+            if not self._validate_graphql_response(
+                gql_latest_build["project"]["versions"]["edges"][0], ["node", "builds", "edges"]
+            ):
                 return
             if not gql_latest_build["project"]["versions"]["edges"][0]["node"]["builds"]["edges"]:
                 logger.warning(f"No builds found for {self.project}")
@@ -664,9 +685,7 @@ class PaperAPI:
             latest_build_info = gql_latest_build["project"]["versions"]["edges"][0]["node"]["builds"]["edges"][0]["node"]
 
             # Check and process update using extracted function
-            update_sent = self._check_version_for_update(
-                latest_version, latest_build_info, use_legacy_storage=True
-            )
+            update_sent = self._check_version_for_update(latest_version, latest_build_info, use_legacy_storage=True)
 
             if not update_sent:
                 logger.info(f"Up to date for {self.project}")
@@ -703,9 +722,7 @@ class PaperAPI:
                 build_info = builds[0]["node"]
 
                 # Check and process update using extracted function
-                if self._check_version_for_update(
-                    version_id, build_info, use_legacy_storage=False
-                ):
+                if self._check_version_for_update(version_id, build_info, use_legacy_storage=False):
                     updates_sent += 1
                     # Add small delay between versions to avoid rate limits
                     time.sleep(Config.VERSION_CHECK_DELAY)
