@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import sys
 import time
 import urllib.parse
 from datetime import datetime as dt
@@ -58,7 +59,8 @@ headers = {
 
 # Without a timeout a stalled request hangs forever while holding the run lock, blocking every future run
 transport = RequestsHTTPTransport(url=Config.GQL_BASE_URL, timeout=Config.DEFAULT_REQUEST_TIMEOUT)
-client = Client(transport=transport, fetch_schema_from_transport=True)
+# Queries are static and known-valid, so skip downloading the schema on every run
+client = Client(transport=transport, fetch_schema_from_transport=False)
 
 latest_query = gql(
     """
@@ -137,16 +139,16 @@ query getAllVersionsWithBuilds($project: String!) {
 )
 
 
-def convert_commit_hash_to_short(hash: str) -> str:
+def convert_commit_hash_to_short(commit_hash: str) -> str:
     """Convert a commit hash to its short 7-character form.
 
     Args:
-        hash: Full commit hash string
+        commit_hash: Full commit hash string
 
     Returns:
         First 7 characters of the hash
     """
-    return hash[:7]
+    return commit_hash[:7]
 
 
 def convert_build_date(date: str) -> dt:
@@ -203,8 +205,11 @@ class PaperAPI:
         self.project = project
         self.image_url = PROJECT_IMAGE_URLS.get(self.project, "")
 
-    def _read_state_file(self) -> dict:
+    def _read_state_file(self, strict: bool = False) -> dict:
         """Read state file with default structure if not found.
+
+        Args:
+            strict: Re-raise JSON parse errors instead of returning the default structure
 
         Returns:
             Dictionary containing state data
@@ -212,7 +217,7 @@ class PaperAPI:
         state_file = Path(f"{self.project}_poller.json")
         # Check if file exists and is empty (0 bytes)
         if state_file.exists() and state_file.stat().st_size == 0:
-            logger.info(f"State file {state_file} is empty, will initialize with current state (no alerts will be sent)")
+            logger.info(f"State file {state_file} is empty, treating as first run (only the latest version will be alerted)")
             return {"versions": {}}
         try:
             with open(state_file, "r") as f:
@@ -222,6 +227,8 @@ class PaperAPI:
             return {"versions": {}}
         except json.JSONDecodeError as e:
             logger.error(f"Error parsing {state_file}: {e}")
+            if strict:
+                raise
             return {"versions": {}}
         except Exception as e:
             logger.error(f"Unexpected error reading {state_file}: {e}")
@@ -402,20 +409,13 @@ class PaperAPI:
         for change in data["commits"]:
             commit_hash = convert_commit_hash_to_short(change["sha"])
             full_hash = change["sha"]
-            summary = change["message"]
-            summary = summary.strip()
-            # summary = "Update DataConverter constants for 1.21.7\n\nhttps://github.com/PaperMC/DataConverter/commit/04b08a102a3d2473420edceed05420b5ccb3b771\n"
-            # Replace the first \n\n with \n\t, then all others with \n
-            summary = summary.split("\n")[0]
-            # Find all unique PR/issue numbers referenced in the summary
-            pr_numbers = set(re.findall(r"#(\d+)", summary))
-
-            # Replace each occurrence exactly once so we don't wrap already-linked numbers
-            for pr_number in pr_numbers:
-                summary = summary.replace(
-                    f"#{pr_number}",
-                    f"[#{pr_number}](https://github.com/PaperMC/{self.project}/issues/{pr_number})",
-                )
+            summary = change["message"].strip().split("\n")[0]
+            # Single pass so #1 can't mangle #12; the lookbehind skips fragments inside URLs
+            summary = re.sub(
+                r"(?<![\w/])#(\d+)",
+                lambda m: f"[#{m[1]}](https://github.com/PaperMC/{self.project}/issues/{m[1]})",
+                summary,
+            )
             github_url = f"https://github.com/PaperMC/{self.project}/commit/{full_hash}"
             # URL encode only the github_url parameter value, not the entire URL
             encoded_github_url = urllib.parse.quote(github_url, safe="")
@@ -488,7 +488,7 @@ class PaperAPI:
         drama: str | dict,
         channel_name: str,
         channel_changed: bool,
-    ) -> None:
+    ) -> bool:
         """Send Discord webhook notification with build update information.
 
         Args:
@@ -502,27 +502,33 @@ class PaperAPI:
             drama: Spigot drama response (string or dict)
             channel_name: Build channel name
             channel_changed: Whether the channel has changed from previous build
+
+        Returns:
+            True if the webhook was delivered, False otherwise
         """
+        header_section = {
+            "type": 9,
+            "components": [
+                {
+                    "type": 10,
+                    "content": f"# {self.project.capitalize()} Update",
+                },
+                {
+                    "type": 10,
+                    "content": f"{channel_name} Build {latest_build} for {latest_version} is now available!\nReleased <t:{build_time}:R> (<t:{build_time}:f>)",
+                },
+            ],
+        }
+        # Discord rejects media components with an empty URL (e.g. Waterfall has no logo)
+        if image_url:
+            header_section["accessory"] = {"type": 11, "media": {"url": image_url}}
         payload = {
             "components": [
                 {
                     "type": 17,
-                    "accent_color": CHANNEL_COLORS[channel_name.upper()],
+                    "accent_color": CHANNEL_COLORS.get(channel_name.upper(), Color.BLUE.value),
                     "components": [
-                        {
-                            "type": 9,
-                            "components": [
-                                {
-                                    "type": 10,
-                                    "content": f"# {self.project.capitalize()} Update",
-                                },
-                                {
-                                    "type": 10,
-                                    "content": f"{channel_name} Build {latest_build} for {latest_version} is now available!\nReleased <t:{build_time}:R> (<t:{build_time}:f>)",
-                                },
-                            ],
-                            "accessory": {"type": 11, "media": {"url": image_url}},
-                        },
+                        header_section,
                         {"type": 14, "divider": True},
                         {"type": 10, "content": changes},
                         {"type": 14, "divider": True},
@@ -555,39 +561,46 @@ class PaperAPI:
             }
             payload["components"].append(changed_container)
         # Send webhook with retry logic
-        self._send_webhook_with_retry(hook_url, payload)
+        return self._send_webhook_with_retry(hook_url, payload)
 
-    def _process_and_send_update(self, version_id: str, build_info: dict, channel_changed: bool) -> None:
-        """Process a build and send webhook updates for it"""
+    def _process_and_send_update(self, version_id: str, build_info: dict, channel_changed: bool) -> str:
+        """Process a build and send webhook updates for it.
+
+        Returns:
+            Delivery status: "dry_run", "sent" (at least one webhook delivered),
+            "failed" (nothing delivered, retry next poll), or "skipped" (permanent
+            data problem, don't retry)
+        """
         build_id = build_info["number"]
         channel_name = build_info["channel"]
 
         if config.DRY_RUN:
             logger.info(f"[DRY RUN] New build for {self.project} {version_id}. Would send update (Build {build_id}).")
-            return
+            return "dry_run"
 
         logger.info(f"New build for {self.project} {version_id}. Sending update.")
 
         # Process build information
         changes = self.get_changes_for_build(build_info)
-        # Safely access download URL with error handling
+        # A missing download URL may just be a race with asset publishing, so retry next poll
         download_info = build_info.get("download")
         if not download_info or "url" not in download_info:
-            logger.warning(f"No download URL found for {self.project} {version_id} build {build_id}")
-            return
+            logger.warning(f"No download URL found for {self.project} {version_id} build {build_id}, will retry next run")
+            return "failed"
         download_url = download_info["url"]
         try:
             build_time = int(convert_build_date(build_info["createdAt"]).timestamp())
         except ValueError as e:
             logger.error(f"Invalid build date format for {self.project} {version_id} build {build_id}: {e}")
-            return
+            return "skipped"
 
         # Get drama once for all webhooks
         drama = get_spigot_drama()
 
         # Send webhook to all configured URLs
+        failed_hooks = []
         for hook in config.webhook_urls:
-            self.send_v2_webhook(
+            delivered = self.send_v2_webhook(
                 hook_url=hook,
                 latest_build=build_id,
                 latest_version=version_id,
@@ -599,6 +612,15 @@ class PaperAPI:
                 channel_name=channel_name.capitalize(),
                 channel_changed=channel_changed,
             )
+            if not delivered:
+                failed_hooks.append(hook)
+
+        if len(failed_hooks) == len(config.webhook_urls):
+            return "failed"
+        # Once any hook succeeds the build is recorded, so the failed hooks never get this one
+        for hook in failed_hooks:
+            logger.error(f"Webhook {hook} permanently missed {self.project} {version_id} build {build_id}")
+        return "sent"
 
     def _check_version_for_update(self, version_id: str, build_info: dict, use_legacy_storage: bool = False) -> bool:
         """Check if a version needs an update and process it if so.
@@ -629,11 +651,6 @@ class PaperAPI:
                 and stored_data.get("channel", "") != channel_name
                 and not is_initialization
             )
-
-            if not updated:
-                self.write_to_json(version_id, build_id, channel_name)
-                self._process_and_send_update(version_id, build_info, channel_changed)
-                return True
         else:
             # Use version-specific storage methods for multi version mode
             updated = self.up_to_date_for_version(version_id, build_id)
@@ -649,12 +666,20 @@ class PaperAPI:
                 and stored_version_data.get("channel", "") != channel_name
             )
 
-            if not updated:
-                self.write_version_to_json(version_id, build_id, channel_name)
-                self._process_and_send_update(version_id, build_info, channel_changed)
-                return True
+        if updated:
+            return False
 
-        return False
+        # Record state only after delivery so a failed send is retried next poll;
+        # dry runs never touch state
+        status = self._process_and_send_update(version_id, build_info, channel_changed)
+        if status in ("sent", "skipped"):
+            if use_legacy_storage:
+                self.write_to_json(version_id, build_id, channel_name)
+            else:
+                self.write_version_to_json(version_id, build_id, channel_name)
+        elif status == "failed":
+            logger.warning(f"Build {build_id} for {self.project} {version_id} was not recorded, will retry next run")
+        return True
 
     def run(self) -> None:
         """Run the poller for this project, checking for updates."""
@@ -698,6 +723,52 @@ class PaperAPI:
             # Wait to not hit discord API rate limits
             time.sleep(Config.RATE_LIMIT_DELAY)
 
+    def _initialize_multi_version_state(self, all_versions: list, existing_state: dict) -> None:
+        """First multi-version run: alert only the newest version and silently seed the rest.
+
+        Without this, a fresh (or legacy-format) state file makes every version look
+        new and floods webhooks for up to 100 versions.
+        """
+        alerted_version = None
+        seeded = {}
+        for version_edge in all_versions:
+            version_data = version_edge["node"]
+            version_id = version_data["key"]
+            builds = version_data.get("builds", {}).get("edges", [])
+            if not builds:
+                continue
+            build_info = builds[0]["node"]
+            if alerted_version is None:
+                # Versions come back newest-first, so the first with builds is the latest
+                alerted_version = version_id
+                self._check_version_for_update(version_id, build_info, use_legacy_storage=False)
+            else:
+                seeded[version_id] = {"build": build_info["number"], "channel": build_info["channel"]}
+
+        # Migrate a legacy-format entry so its version isn't re-alerted on the next run
+        legacy_version = existing_state.get("version")
+        if legacy_version and legacy_version not in seeded:
+            seeded[legacy_version] = {
+                "build": existing_state.get("build", ""),
+                "channel": existing_state.get("channel"),
+            }
+
+        if config.DRY_RUN:
+            logger.info(f"[DRY RUN] First run for {self.project}: would silently seed {len(seeded)} version(s) into state")
+            return
+
+        # Single batched write so a crash mid-seed can't leave a partial file behind;
+        # setdefault so we never clobber the entry the alerted send may have just written
+        data = self._read_state_file()
+        versions = data.setdefault("versions", {})
+        for version_id, version_state in seeded.items():
+            versions.setdefault(version_id, version_state)
+        self._atomic_write_json(data, Path(f"{self.project}_poller.json"))
+        logger.info(
+            f"First run for {self.project}: alerted {alerted_version or 'no versions'}, "
+            f"silently seeded {len(seeded)} other version(s)"
+        )
+
     def _run_multi_version_mode(self) -> None:
         """New behavior: check all versions for updates"""
         try:
@@ -707,6 +778,18 @@ class PaperAPI:
             if not self._validate_graphql_response(gql_all_versions, ["project", "versions", "edges"]):
                 return
             all_versions = gql_all_versions["project"]["versions"]["edges"]
+
+            try:
+                state = self._read_state_file(strict=True)
+            except json.JSONDecodeError:
+                # A corrupt file is not a first run; reseeding would clobber whatever it held
+                logger.error(f"State file for {self.project} is corrupt, skipping project (fix or delete the file)")
+                return
+
+            # No per-version state yet (fresh install or legacy-format file)
+            if not state.get("versions"):
+                self._initialize_multi_version_state(all_versions, state)
+                return
 
             updates_sent = 0
 
@@ -742,6 +825,11 @@ class PaperAPI:
 
 
 def main():
+    # A misconfigured poller should fail loudly instead of silently posting nowhere
+    if not config.webhook_urls and not config.DRY_RUN:
+        logger.error("No valid webhook URLs configured. Set WEBHOOK_URL (a JSON array of URLs) or create webhooks.json.")
+        sys.exit(1)
+
     lock_file = Path("paper_poller.lock")
     lock = FileLock(str(lock_file), timeout=Config.LOCK_TIMEOUT)
 
@@ -762,6 +850,8 @@ def main():
         logger.warning("Lock file is locked, exiting")
     except Exception as e:
         logger.error(f"Error during execution: {e}")
+        # Non-zero exit so cron/systemd monitoring can see failures
+        sys.exit(1)
 
 
 if __name__ == "__main__":

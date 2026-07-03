@@ -7,6 +7,7 @@ import time
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+import requests
 
 from paper_poller import PaperAPI
 
@@ -97,12 +98,12 @@ class TestSingleVersionMode:
 
     @patch("paper_poller.client")
     @patch("requests.post")
-    @patch("paper_poller.get_spigot_drama")
+    @patch("requests.get")
     @patch("time.sleep")
     def test_run_single_version_mode_channel_change(
         self,
         mock_sleep,
-        mock_drama,
+        mock_get,
         mock_post,
         mock_client,
         tmp_path,
@@ -114,7 +115,7 @@ class TestSingleVersionMode:
 
         # Setup mocks
         mock_client.execute.return_value = sample_latest_build_response
-        mock_drama.return_value = {"response": "No drama"}
+        mock_get.return_value.json.return_value = {"response": "No drama"}
         mock_post.return_value.status_code = 200
         # Mock webhook_urls in config
         import paper_poller
@@ -122,9 +123,12 @@ class TestSingleVersionMode:
         mock_webhook_urls = ["http://test.webhook.com"]
         paper_poller.config.webhook_urls = mock_webhook_urls
 
-        # Create existing state with different channel
+        # Create existing state with an older build on a different channel
         api = PaperAPI()
-        api.write_to_json("1.21.1", "123", "BETA")
+        api.write_to_json("1.21.1", "122", "BETA")
+
+        # Mock the get_latest_build to avoid real API call
+        api.get_latest_build = Mock(return_value=sample_latest_build_response)
 
         # Run the check
         api._run_single_version_mode()
@@ -221,10 +225,12 @@ class TestMultiVersionMode:
 
     @patch("paper_poller.client")
     @patch("requests.post")
+    @patch("requests.get")
     @patch("time.sleep")
     def test_run_multi_version_mode_skips_empty_builds(
         self,
         mock_sleep,
+        mock_get,
         mock_post,
         mock_client,
         tmp_path,
@@ -236,9 +242,13 @@ class TestMultiVersionMode:
 
         # Setup mock GQL response (includes 1.20.6 with empty builds)
         mock_client.execute.return_value = sample_all_versions_response
+        mock_get.return_value.json.return_value = {"response": "No drama"}
         mock_post.return_value.status_code = 200
 
+        # Seed existing state so this exercises the normal loop, not first-run init
         api = PaperAPI()
+        api.write_version_to_json("1.21.1", "123", "STABLE")
+        api.write_version_to_json("1.21", "120", "RECOMMENDED")
 
         # Mock get_all_versions to use our fixture
         api.get_all_versions = Mock(return_value=sample_all_versions_response)
@@ -294,6 +304,11 @@ class TestDryRunMode:
 
             # Verify NO webhooks were sent
             mock_post.assert_not_called()
+
+            # Verify dry run did not touch the state file
+            with open("paper_poller.json", "r") as f:
+                data = json.load(f)
+            assert data["build"] == "122"
         finally:
             # Restore original value
             paper_poller.config.DRY_RUN = original_dry_run
@@ -412,3 +427,186 @@ class TestCheckVersionForUpdate:
             data = json.load(f)
         assert "versions" in data
         assert "1.21.1" in data["versions"]
+
+
+class TestFirstRunMultiVersion:
+    """Tests for first-run initialization in multi-version mode."""
+
+    @patch("requests.post")
+    @patch("requests.get")
+    @patch("time.sleep")
+    def test_fresh_state_alerts_only_newest(
+        self, mock_sleep, mock_get, mock_post, tmp_path, monkeypatch, sample_all_versions_response
+    ):
+        """A fresh state file alerts only the newest version and silently seeds the rest."""
+        monkeypatch.chdir(tmp_path)
+
+        mock_get.return_value.json.return_value = {"response": "No drama"}
+        mock_post.return_value.status_code = 200
+
+        api = PaperAPI()
+        api.get_all_versions = Mock(return_value=sample_all_versions_response)
+
+        api._run_multi_version_mode()
+
+        # Only the newest version (1.21.1) gets a webhook
+        assert mock_post.call_count == 1
+
+        # Both versions with builds end up recorded
+        with open("paper_poller.json", "r") as f:
+            data = json.load(f)
+        assert data["versions"]["1.21.1"]["build"] == "123"
+        assert data["versions"]["1.21"]["build"] == "120"
+
+        # A second run is fully up to date
+        mock_post.reset_mock()
+        api._run_multi_version_mode()
+        mock_post.assert_not_called()
+
+    @patch("requests.post")
+    @patch("requests.get")
+    @patch("time.sleep")
+    def test_legacy_state_migrates_without_flood(
+        self, mock_sleep, mock_get, mock_post, tmp_path, monkeypatch, sample_all_versions_response
+    ):
+        """Enabling multi-version mode with a legacy-format state file must not flood webhooks."""
+        monkeypatch.chdir(tmp_path)
+
+        mock_get.return_value.json.return_value = {"response": "No drama"}
+        mock_post.return_value.status_code = 200
+
+        # Legacy-format state: already up to date with the newest build
+        with open("paper_poller.json", "w") as f:
+            json.dump({"version": "1.21.1", "build": "123", "channel": "STABLE"}, f)
+
+        api = PaperAPI()
+        api.get_all_versions = Mock(return_value=sample_all_versions_response)
+
+        api._run_multi_version_mode()
+
+        # No webhooks: newest is up to date and the rest are seeded silently
+        mock_post.assert_not_called()
+
+        with open("paper_poller.json", "r") as f:
+            data = json.load(f)
+        assert data["versions"]["1.21.1"]["build"] == "123"
+        assert data["versions"]["1.21"]["build"] == "120"
+
+        # A second run stays quiet
+        api._run_multi_version_mode()
+        mock_post.assert_not_called()
+
+    @patch("requests.post")
+    @patch("requests.get")
+    @patch("time.sleep")
+    def test_fresh_state_dry_run_writes_nothing(
+        self, mock_sleep, mock_get, mock_post, tmp_path, monkeypatch, sample_all_versions_response, mocker
+    ):
+        """Dry run on a fresh state must not send webhooks or create the state file."""
+        monkeypatch.chdir(tmp_path)
+
+        mocker.patch("paper_poller.config.DRY_RUN", True)
+
+        api = PaperAPI()
+        api.get_all_versions = Mock(return_value=sample_all_versions_response)
+
+        api._run_multi_version_mode()
+
+        mock_post.assert_not_called()
+        assert not os.path.exists("paper_poller.json")
+
+    @patch("requests.post")
+    @patch("time.sleep")
+    def test_corrupt_state_skips_project(self, mock_sleep, mock_post, tmp_path, monkeypatch, sample_all_versions_response):
+        """A corrupt state file is not treated as a first run and is left untouched."""
+        monkeypatch.chdir(tmp_path)
+
+        corrupt_content = "not json {{{"
+        with open("paper_poller.json", "w") as f:
+            f.write(corrupt_content)
+
+        api = PaperAPI()
+        api.get_all_versions = Mock(return_value=sample_all_versions_response)
+
+        api._run_multi_version_mode()
+
+        mock_post.assert_not_called()
+        with open("paper_poller.json", "r") as f:
+            assert f.read() == corrupt_content
+
+
+class TestFailedDeliveryRetry:
+    """Tests that failed webhook deliveries are retried on the next poll."""
+
+    @patch("requests.post")
+    @patch("requests.get")
+    @patch("time.sleep")
+    def test_failed_send_retries_next_run(
+        self, mock_sleep, mock_get, mock_post, tmp_path, monkeypatch, sample_latest_build_response
+    ):
+        """State is only recorded after delivery, so a failed send is re-attempted."""
+        monkeypatch.chdir(tmp_path)
+
+        mock_get.return_value.json.return_value = {"response": "No drama"}
+
+        api = PaperAPI()
+        api.write_to_json("1.21.1", "122", "STABLE")
+        api.get_latest_build = Mock(return_value=sample_latest_build_response)
+
+        # First run: every delivery attempt fails, so the new build is not recorded
+        mock_post.side_effect = requests.RequestException("boom")
+        api._run_single_version_mode()
+
+        with open("paper_poller.json", "r") as f:
+            assert json.load(f)["build"] == "122"
+
+        # Next run: delivery succeeds, the same build is sent exactly once and recorded
+        mock_post.reset_mock()
+        mock_post.side_effect = None
+        mock_post.return_value.status_code = 200
+        api._run_single_version_mode()
+
+        assert mock_post.call_count == 1
+        with open("paper_poller.json", "r") as f:
+            assert json.load(f)["build"] == "123"
+
+
+class TestMain:
+    """Tests for main() exit behavior."""
+
+    def test_main_exits_when_no_webhooks(self, tmp_path, monkeypatch, mocker):
+        """Missing webhook configuration is a hard error."""
+        monkeypatch.chdir(tmp_path)
+        import paper_poller
+
+        mocker.patch.object(paper_poller.config, "webhook_urls", [])
+        mocker.patch.object(paper_poller.config, "DRY_RUN", False)
+
+        with pytest.raises(SystemExit) as excinfo:
+            paper_poller.main()
+        assert excinfo.value.code == 1
+
+    def test_main_proceeds_in_dry_run_without_webhooks(self, tmp_path, monkeypatch, mocker):
+        """Dry run may run without any webhook URLs configured."""
+        monkeypatch.chdir(tmp_path)
+        import paper_poller
+
+        mocker.patch.object(paper_poller.config, "webhook_urls", [])
+        mocker.patch.object(paper_poller.config, "DRY_RUN", True)
+        run_mock = mocker.patch.object(paper_poller.PaperAPI, "run")
+
+        paper_poller.main()
+
+        assert run_mock.call_count == len(paper_poller.config.PROJECTS)
+
+    def test_main_exits_nonzero_on_error(self, tmp_path, monkeypatch, mocker):
+        """Unexpected errors surface as a non-zero exit code for cron/systemd."""
+        monkeypatch.chdir(tmp_path)
+        import paper_poller
+
+        mocker.patch.object(paper_poller.config, "DRY_RUN", True)
+        mocker.patch.object(paper_poller.PaperAPI, "run", side_effect=Exception("boom"))
+
+        with pytest.raises(SystemExit) as excinfo:
+            paper_poller.main()
+        assert excinfo.value.code == 1

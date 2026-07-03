@@ -14,6 +14,26 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def _int_env(name: str, default: int) -> int:
+    """Parse an integer environment variable, falling back so a typo can't crash startup.
+
+    Args:
+        name: Environment variable name
+        default: Value to use when the variable is unset or not an integer
+
+    Returns:
+        Parsed integer value or the default
+    """
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning(f"Invalid integer for {name}: {value!r}, using default {default}")
+        return default
+
+
 class Config:
     """Centralized configuration management for paper-poller."""
 
@@ -21,12 +41,11 @@ class Config:
     DEFAULT_REQUEST_TIMEOUT = 10
     WEBHOOK_TIMEOUT = 30
     LOCK_TIMEOUT = 10
-    DEFAULT_WEBHOOK_URL = "https://httpbin.org/post"
     GQL_BASE_URL = "https://fill.papermc.io/graphql"
 
     # Rate limiting delays (configurable via environment)
-    RATE_LIMIT_DELAY = int(os.getenv("PAPER_POLLER_RATE_LIMIT_DELAY", "2"))
-    VERSION_CHECK_DELAY = int(os.getenv("PAPER_POLLER_VERSION_CHECK_DELAY", "1"))
+    RATE_LIMIT_DELAY = _int_env("PAPER_POLLER_RATE_LIMIT_DELAY", 2)
+    VERSION_CHECK_DELAY = _int_env("PAPER_POLLER_VERSION_CHECK_DELAY", 1)
 
     # Project name constants
     PROJECT_PAPER = "paper"
@@ -69,30 +88,35 @@ class Config:
             urls: List of URL strings to validate
 
         Returns:
-            List of valid URLs, or default URL if none are valid
+            List of valid URLs (possibly empty)
         """
         valid_urls = [url for url in urls if Config._validate_webhook_url(url)]
         invalid_count = len(urls) - len(valid_urls)
         if invalid_count > 0:
             logger.warning(f"Found {invalid_count} invalid webhook URL(s), skipping them")
-        return valid_urls if valid_urls else [Config.DEFAULT_WEBHOOK_URL]
+        return valid_urls
 
     def _load_webhook_urls(self) -> list[str]:
         """Load webhook URLs from environment, file, or stdin.
 
         Returns:
-            List of webhook URL strings
+            List of webhook URL strings (empty when nothing valid is configured)
         """
 
         # Check environment variable first
         if os.getenv("WEBHOOK_URL"):
-            logger.info(f"Using webhook URL from ENV: {os.getenv('WEBHOOK_URL')}")
+            # Don't log the value itself; webhook URLs are bearer credentials
+            logger.info("Using webhook URL(s) from WEBHOOK_URL environment variable")
             try:
-                return json.loads(os.getenv("WEBHOOK_URL"))
+                urls = json.loads(os.getenv("WEBHOOK_URL"))
             except json.JSONDecodeError as e:
-                logger.warning(f"Error parsing WEBHOOK_URL from environment: {e}")
-                logger.warning("Falling back to default webhook URL")
-                return [self.DEFAULT_WEBHOOK_URL]
+                logger.error(f"Error parsing WEBHOOK_URL from environment: {e}")
+                logger.error("WEBHOOK_URL must be a JSON array of URLs, e.g. WEBHOOK_URL='[\"https://...\"]'")
+                return []
+            if not isinstance(urls, list) or not all(isinstance(url, str) for url in urls):
+                logger.error("WEBHOOK_URL must be a JSON array of URL strings, e.g. WEBHOOK_URL='[\"https://...\"]'")
+                return []
+            return urls
 
         # Check for webhooks.json file
         if Path("webhooks.json").exists():
@@ -102,7 +126,7 @@ class Config:
                     return json.load(f)["urls"]
             except (json.JSONDecodeError, KeyError) as e:
                 logger.error(f"Error loading webhooks.json: {e}")
-                return [self.DEFAULT_WEBHOOK_URL]
+                return []
 
         # Check stdin if --stdin flag is present
         start_args = sys.argv[1:]
@@ -112,9 +136,7 @@ class Config:
                 return data["urls"]
             except (json.JSONDecodeError, KeyError) as e:
                 logger.error(f"Error parsing JSON from stdin: {e}")
-                logger.error("Falling back to default webhook URL")
-                return [self.DEFAULT_WEBHOOK_URL]
+                return []
 
-        # Default fallback
-        logger.info("No webhook URL found, using default")
-        return [self.DEFAULT_WEBHOOK_URL]
+        logger.warning("No webhook URLs configured")
+        return []

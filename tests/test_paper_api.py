@@ -212,6 +212,26 @@ class TestPaperAPIGetChanges:
         assert "github.com/PaperMC/paper/issues/1234" in changes
         assert "github.com/PaperMC/paper/issues/5678" in changes
 
+    def test_get_changes_with_overlapping_issue_numbers(self):
+        """Overlapping numbers like #1 and #12 must both link cleanly."""
+        api = PaperAPI()
+        build_data = {"commits": [{"sha": "abc123def456789", "message": "Fix #1 and #12"}]}
+
+        changes = api.get_changes_for_build(build_data)
+        assert "[#1](https://github.com/PaperMC/paper/issues/1)" in changes
+        assert "[#12](https://github.com/PaperMC/paper/issues/12)" in changes
+        # The old per-number replace turned #12 into a mangled [#1](...)2
+        assert "issues/1)2" not in changes
+
+    def test_get_changes_ignores_numbers_inside_urls(self):
+        """A #fragment inside an existing URL must not be linked."""
+        api = PaperAPI()
+        build_data = {"commits": [{"sha": "abc123def456789", "message": "See https://example.com/page#123 for details"}]}
+
+        changes = api.get_changes_for_build(build_data)
+        assert "[#123]" not in changes
+        assert "https://example.com/page#123" in changes
+
 
 class TestPaperAPIProcessAndSendUpdate:
     """Tests for _process_and_send_update method."""
@@ -225,10 +245,11 @@ class TestPaperAPIProcessAndSendUpdate:
         mocker.patch("paper_poller.config.webhook_urls", ["http://test.webhook.com"])
 
         api = PaperAPI()
-        api._process_and_send_update("1.21.1", sample_build_info, False)
+        status = api._process_and_send_update("1.21.1", sample_build_info, False)
 
         # Verify webhook was called
         assert mock_send.call_count == 1
+        assert status == "sent"
 
     def test_process_and_send_update_dry_run_mode(self, sample_build_info, mocker):
         """Test _process_and_send_update doesn't send webhooks in dry run."""
@@ -239,10 +260,94 @@ class TestPaperAPIProcessAndSendUpdate:
         api = PaperAPI()
 
         # Call the method - it should detect dry run and return early
-        api._process_and_send_update("1.21.1", sample_build_info, False)
+        status = api._process_and_send_update("1.21.1", sample_build_info, False)
 
         # In dry run mode, webhook should not be called
         mock_send.assert_not_called()
+        assert status == "dry_run"
+
+    def test_missing_download_url_returns_failed(self, sample_build_info, mocker):
+        """A missing download URL is treated as transient so the build retries next poll."""
+        mock_send = mocker.patch.object(PaperAPI, "send_v2_webhook")
+        build_info = dict(sample_build_info)
+        del build_info["download"]
+
+        api = PaperAPI()
+        status = api._process_and_send_update("1.21.1", build_info, False)
+
+        assert status == "failed"
+        mock_send.assert_not_called()
+
+    def test_invalid_date_returns_skipped(self, sample_build_info, mocker):
+        """An unparseable build date is a permanent problem, recorded and never retried."""
+        mock_send = mocker.patch.object(PaperAPI, "send_v2_webhook")
+        build_info = dict(sample_build_info)
+        build_info["createdAt"] = "not-a-date"
+
+        api = PaperAPI()
+        status = api._process_and_send_update("1.21.1", build_info, False)
+
+        assert status == "skipped"
+        mock_send.assert_not_called()
+
+    @patch("requests.get")
+    def test_partial_failure_returns_sent_and_logs_missed_hook(self, mock_get, sample_build_info, mocker, caplog):
+        """One successful hook records the build; failed hooks are logged as permanent misses."""
+        import logging
+
+        import paper_poller
+
+        mock_get.return_value.json.return_value = {"response": "No drama"}
+        mocker.patch.object(paper_poller.config, "webhook_urls", ["http://ok.webhook", "http://bad.webhook"])
+        mocker.patch.object(PaperAPI, "send_v2_webhook", side_effect=[True, False])
+
+        api = PaperAPI()
+        with caplog.at_level(logging.ERROR):
+            status = api._process_and_send_update("1.21.1", sample_build_info, False)
+
+        assert status == "sent"
+        assert "http://bad.webhook" in caplog.text
+        assert "permanently missed" in caplog.text
+
+    @patch("requests.get")
+    def test_all_hooks_failed_returns_failed(self, mock_get, sample_build_info, mocker):
+        """When every hook fails, nothing is recorded so the build retries next poll."""
+        import paper_poller
+
+        mock_get.return_value.json.return_value = {"response": "No drama"}
+        mocker.patch.object(paper_poller.config, "webhook_urls", ["http://a.webhook", "http://b.webhook"])
+        mocker.patch.object(PaperAPI, "send_v2_webhook", side_effect=[False, False])
+
+        api = PaperAPI()
+        status = api._process_and_send_update("1.21.1", sample_build_info, False)
+
+        assert status == "failed"
+
+
+class TestCheckVersionWriteGating:
+    """State must only be written when delivery succeeded or the problem is permanent."""
+
+    @pytest.mark.parametrize(
+        ("status", "state_written"),
+        [
+            ("sent", True),
+            ("skipped", True),
+            ("failed", False),
+            ("dry_run", False),
+        ],
+    )
+    @pytest.mark.parametrize("use_legacy_storage", [True, False])
+    def test_write_gated_on_status(
+        self, status, state_written, use_legacy_storage, tmp_path, monkeypatch, sample_build_info, mocker
+    ):
+        monkeypatch.chdir(tmp_path)
+        mocker.patch.object(PaperAPI, "_process_and_send_update", return_value=status)
+
+        api = PaperAPI()
+        result = api._check_version_for_update("1.21.1", sample_build_info, use_legacy_storage=use_legacy_storage)
+
+        assert result is True
+        assert os.path.exists("paper_poller.json") is state_written
 
 
 class TestGetSpigotDrama:
@@ -327,3 +432,49 @@ class TestPaperAPIWebhookPayload:
         # Count components of type 10 (content components)
         content_components = [c for c in payload["components"] if c.get("type") == 10]
         assert len(content_components) > 0
+
+    @patch("requests.post")
+    def test_send_v2_webhook_unknown_channel_uses_default_color(self, mock_post):
+        """An unknown channel from the API must not crash the send."""
+        from paper_poller import Color
+
+        api = PaperAPI()
+
+        result = api.send_v2_webhook(
+            hook_url="http://test.webhook.com",
+            latest_build="123",
+            latest_version="1.21.1",
+            build_time=1697112000,
+            image_url=api.image_url,
+            changes="- abc123d Fix something\n",
+            download_url="https://example.com/paper.jar",
+            drama={"response": "No drama"},
+            channel_name="Experimental",
+            channel_changed=False,
+        )
+
+        assert result is True
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["components"][0]["accent_color"] == Color.BLUE.value
+
+    @patch("requests.post")
+    def test_send_v2_webhook_empty_image_url_omits_accessory(self, mock_post):
+        """Discord rejects media with an empty URL (Waterfall has no logo)."""
+        api = PaperAPI(project="waterfall")
+
+        api.send_v2_webhook(
+            hook_url="http://test.webhook.com",
+            latest_build="123",
+            latest_version="1.21.1",
+            build_time=1697112000,
+            image_url="",
+            changes="- abc123d Fix something\n",
+            download_url="https://example.com/waterfall.jar",
+            drama={"response": "No drama"},
+            channel_name="Stable",
+            channel_changed=False,
+        )
+
+        payload = mock_post.call_args.kwargs["json"]
+        header_section = payload["components"][0]["components"][0]
+        assert "accessory" not in header_section

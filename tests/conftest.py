@@ -8,6 +8,14 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def default_webhook_urls(mocker):
+    """Give every test a stable webhook list; the real config may load zero URLs or the repo's webhooks.json."""
+    import paper_poller
+
+    mocker.patch.object(paper_poller.config, "webhook_urls", ["http://example.com/webhook"])
+
+
 @pytest.fixture
 def sample_build_info():
     """Sample build information for testing."""

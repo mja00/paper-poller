@@ -70,6 +70,9 @@ To run the script periodically, add it to your crontab:
 */10 * * * * cd /path/to/paper-poller && uv run paper-poller.py
 ```
 
+### Exit Codes
+The poller exits non-zero when no valid webhook URLs are configured and when a run fails with an unexpected error, so cron mail and systemd monitoring can catch problems. A run skipped because another instance holds the lock still exits 0. Note that a failure in one project aborts the remaining projects for that run; they are picked up again on the next run.
+
 ## What It Monitors
 
 The script automatically monitors these PaperMC projects:

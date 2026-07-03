@@ -13,6 +13,8 @@ import sys
 
 spec = importlib.util.spec_from_file_location("paper_poller_main", os.path.join(os.path.dirname(__file__), "paper-poller.py"))
 paper_poller_main = importlib.util.module_from_spec(spec)
+# Register before exec so repeated imports share one module instance (one Config, one gql client)
+sys.modules[spec.name] = paper_poller_main
 spec.loader.exec_module(paper_poller_main)
 
 # Export all public items
