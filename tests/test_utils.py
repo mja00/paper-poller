@@ -114,3 +114,15 @@ class TestEnvironmentConfiguration:
         import paper_poller as pp
 
         assert pp.DRY_RUN in [True, False]
+
+
+class TestGraphQLTransport:
+    """Tests for the GraphQL transport configuration."""
+
+    def test_transport_has_timeout(self):
+        """A missing timeout lets a stalled request hang forever while holding the run lock."""
+        import paper_poller as pp
+
+        from config import Config
+
+        assert pp.client.transport.default_timeout == Config.DEFAULT_REQUEST_TIMEOUT

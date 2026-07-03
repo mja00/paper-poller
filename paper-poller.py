@@ -56,7 +56,8 @@ headers = {
     "Pragma": "no-cache",
 }
 
-transport = RequestsHTTPTransport(url=Config.GQL_BASE_URL)
+# Without a timeout a stalled request hangs forever while holding the run lock, blocking every future run
+transport = RequestsHTTPTransport(url=Config.GQL_BASE_URL, timeout=Config.DEFAULT_REQUEST_TIMEOUT)
 client = Client(transport=transport, fetch_schema_from_transport=True)
 
 latest_query = gql(
